@@ -34,12 +34,12 @@ Closes #<!-- Issue番号を記載 (例: Closes #4) -->
 - [ ] `npm run lint`（ESLint / Prettier）がエラーなく通過すること
 - [ ] `npx tsc --noEmit`（型チェック）がエラーなく通過すること
 - [ ] `npm test`（単体・コンポーネントテスト）がすべて通過すること
-- [ ] `npm run build`（Vite + React &amp; Hono Worker ビルド）が成功すること
+- [ ] `npm run build`（Vite + React & Hono Worker ビルド）が成功すること
 - [ ] フロントエンドUIの変更を含む場合、ブラウザ（モバイルビューポート 320px〜430px）で表示・操作を確認済みであること
-- [ ] `stg` ブランチ向けPRの場合、発行された **Cloudflare Workers Preview URL** で実機相当の動作確認を実施済みであること
+- [ ] `stg` / `main` ブランチ向けPRの場合、PRコメントに発行された **Cloudflare Workers Preview URL** で実機相当の動作確認を実施済みであること
 
 ---
 
 ## 共同編集者
 
-- &lt;!-- モデル名を表示してください(ex Gemini 4 Argon) --&gt;
+- <!-- モデル名を表示してください(ex Gemini 4 Argon) -->

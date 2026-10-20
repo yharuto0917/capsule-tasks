@@ -1,5 +1,6 @@
 version: 2
 updates:
+  # Task 1.1 で package.json が追加されるまでは npm の更新チェックがエラーになるが、実害はないため許容する
   - package-ecosystem: "npm"
     directory: "/"
     target-branch: "Development"

@@ -12,13 +12,18 @@ concurrency:
 
 permissions:
   contents: read
-  deployments: write
+
+defaults:
+  run:
+    # shell 未指定だと `bash -e` となり pipefail が効かず、`| tee` で wrangler の失敗が握り潰されるため明示する
+    shell: bash
 
 jobs:
   deploy-production:
     name: Deploy to Cloudflare Workers Production
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: production
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,13 +32,15 @@ jobs:
         id: readiness
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ ! -f "package.json" ] || [ ! -f "wrangler.jsonc" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "reason=package.json or wrangler.jsonc not yet present." >> "$GITHUB_OUTPUT"
-          elif [ -z "$CF_TOKEN" ]; then
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "reason=CLOUDFLARE_API_TOKEN secret is not configured yet." >> "$GITHUB_OUTPUT"
+          elif [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            # プロジェクトが存在するのに Secrets が無い場合は本番デプロイ漏れになるため失敗させる
+            echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID secret is not configured."
+            exit 1
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
@@ -70,6 +77,6 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           OUT=$(npx wrangler deploy 2>&1 | tee /dev/stderr)
-          PROD_URL=$(echo "$OUT" | grep -Eo 'https://[a-zA-Z0-9._-]+\.workers\.dev' | tail -n 1 || true)
+          PROD_URL=$(echo "$OUT" | grep -Eo 'https://[a-zA-Z0-9._-]+\.workers\.dev' | head -n 1 || true)
           echo "### 🎉 Deployed to Cloudflare Workers Production" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Production URL**: ${PROD_URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Production URL**: ${PROD_URL:-N/A}" >> "$GITHUB_STEP_SUMMARY"

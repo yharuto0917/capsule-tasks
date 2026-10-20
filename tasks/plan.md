@@ -245,7 +245,7 @@ flowchart TD
 * **対応要件**：セクション 6: 非機能要件・技術仕様、`AGENTS.md`（ブランチ戦略・CI/CD）
 * **実装内容**：
   * **3階層ブランチ環境の設置**: 日常開発統合用の `Development` ブランチ、ステージング検証用の `stg` ブランチ、本番リリース用の `main` ブランチを構築（`feature/*` → `Development` → `stg` → `main`）。
-  * **Cloudflare Workers Preview URL & CI/CD 自動化**: `.github/workflows/ci.yml`（Lint / Typecheck / Test / Build / Audit 品質ゲート）、`.github/workflows/deploy-stg-preview.yml`（`stg` 更新および PR 時の `wrangler versions upload --preview-alias stg` / `env.staging` による Preview URL 自動発行＆PRコメント投稿）、`.github/workflows/deploy-production.yml`（`main` マージ時の本番自動デプロイ）の実装。
+  * **Cloudflare Workers Preview URL & CI/CD 自動化**: `.github/workflows/ci.yml`（Lint / Typecheck / Test / Build / Audit 品質ゲート）、`.github/workflows/deploy-stg-preview.yml`（`CLOUDFLARE_ENV=staging` ビルドによるステージング Worker `capsule-tasks-stg` へのデプロイ、および PR 時の `wrangler versions upload --preview-alias pr-{PR番号}` による Preview URL 自動発行＆PRコメント投稿）、`.github/workflows/deploy-production.yml`（`main` マージ時の本番自動デプロイ）の実装。
   * **DevOps ガバナンス整備**: `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`, `.gitignore`, `.editorconfig` の整備および `wrangler.jsonc` の `preview_urls: true` 仕様化。
 * **受け入れ条件（Acceptance Criteria）**：
   * [ ] `Development` および `stg` ブランチがリモートに設置され、機能PRの統合から `stg` での Cloudflare Workers Preview URL 検証、`main` 本番リリースまでのパイプラインが構築されていること。

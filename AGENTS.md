@@ -22,7 +22,7 @@
 ```mermaid
 flowchart LR
     F["作業ブランチ<br>(yharuto0917/issue-* / feature/*)"] -->|PR & CI Check| D["Development<br>(日常開発の統合ブランチ)"]
-    D -->|PR & Preview Deploy| S["stg<br>(ステージング検証・Preview URL発行)"]
+    D -->|PR & Preview URL発行| S["stg<br>(ステージング検証・capsule-tasks-stg)"]
     S -->|PR & Production Deploy| M["main<br>(本番リリースブランチ)"]
 ```
 
@@ -31,13 +31,16 @@ flowchart LR
      * 各タスク・Issueの作業ブランチ（`yharuto0917/issue-{番号}-{概要}` または `feature/*`）は、`Development` から分岐し、**必ず `Development` ブランチへ向けてPRを作成**してください（`main` へ直接機能PRを出さないこと）。
   2. **`stg` ブランチ（ステージング検証＆Cloudflare Workers Preview URL）**:
      * `Development` で統合された機能をステージング検証する際、`Development` → `stg` へのPRを作成・マージします。
-     * `stg` へのPushおよびPR作成時には GitHub Actions（`deploy-stg-preview.yml`）が自動実行され、**Cloudflare Workers の Preview URL**（`https://stg-capsule-tasks.<subdomain>.workers.dev` およびバージョン固有 Preview URL）が発行されてPRコメント・Job Summaryに出力されます。
-     * 本番リリース前に必ずこの Preview URL 上で実機動作確認を行います。
+     * GitHub Actions（`deploy-stg-preview.yml`）により、本番とは別のステージング Worker（`capsule-tasks-stg`）へ自動デプロイされます。
+       * `stg` / `main` 向けPR作成・更新時: PRごとの **Preview URL**（`https://pr-{PR番号}-capsule-tasks-stg.<subdomain>.workers.dev` およびバージョン固有 Preview URL）が発行され、PRコメント・Job Summaryに出力されます。
+       * `stg` へのPush（マージ）時: ステージング Worker 本体（`https://capsule-tasks-stg.<subdomain>.workers.dev`）が更新されます。
+     * 本番リリース前に必ずこれらの URL 上で実機動作確認を行います。
+     * PR の Preview アップロードは既存の `capsule-tasks-stg` Worker が前提のため、初回は `stg` へのPushまたは `workflow_dispatch` でステージング Worker を作成してください。
   3. **`main` ブランチ（本番環境）**:
-     * `stg` の Preview URL で動作確認が完了した変更のみを、`stg` → `main` のPRでマージします。
+     * `stg`（ステージング Worker / Preview URL）で動作確認が完了した変更のみを、`stg` → `main` のPRでマージします。
      * `main` へのマージ時に GitHub Actions（`deploy-production.yml`）により Cloudflare Workers 本番環境（`capsule-tasks`）へ自動デプロイされます。
 * **Worktreeの活用とブランチ削除**:
-  * 原則として作業ごとに独立した Worktree（`/Users/yharuto/Documents/programing/orca/capsule-tasks/issue-{番号}-{概要}`）を切り、コンテキストの汚染を防ぎます。
+  * 原則として作業ごとに独立した Worktree（リポジトリルートから見て `../orca/capsule-tasks/issue-{番号}-{概要}`）を切り、コンテキストの汚染を防ぎます。
   * PRがマージされたなど、使用が終了した作業ブランチおよびWorktreeは速やかに削除してください（`Development`, `stg`, `main` は永続ブランチのため削除しないこと）。
 
 ### 1.4 コミットメッセージ規約
@@ -125,6 +128,9 @@ flowchart TD
 ### 4.1 `wrangler.jsonc` の必須設定
 Cloudflare Workers の Preview URL 機能および `stg` 環境デプロイを有効にするため、`wrangler.jsonc` には必ず `"workers_dev": true`, `"preview_urls": true`, および `"env.staging"` を含めてください。
 
+* `@cloudflare/vite-plugin` 構成では環境はビルド時に確定し、`wrangler deploy --env staging` の `--env` は無視されます（本番設定のままデプロイされる）。ステージング向けは必ず `CLOUDFLARE_ENV=staging npm run build` でビルドしてから `wrangler deploy` / `wrangler versions upload` を実行してください。
+* `vars` や KV / D1 / R2 などの bindings はトップレベルから `env.staging` へ**継承されません**。bindings を追加する際は `env.staging` 側にもステージング用リソースを個別に定義してください。
+
 ```jsonc
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -152,11 +158,13 @@ Cloudflare Workers の Preview URL 機能および `stg` 環境デプロイを�
 ### 4.2 GitHub Actions ワークフローと必要な GitHub Secrets
 | ワークフロー | トリガー | 役割 |
 | :--- | :--- | :--- |
-| `.github/workflows/ci.yml` | `Development`, `stg`, `main` への Push / PR | Lint, Typecheck, Unit Test, Build, Security Audit の品質ゲート |
-| `.github/workflows/deploy-stg-preview.yml` | `stg` への Push / `stg`・`main` 向け PR | `wrangler versions upload --preview-alias stg`（および `env.staging`）を実行し、発行された **Preview URL** を PR コメント＆ Job Summary に自動投稿 |
-| `.github/workflows/deploy-production.yml` | `main` への Push | 品質チェック通過後に `wrangler deploy` で本番環境へデプロイ |
+| `.github/workflows/ci.yml` | `Development`, `stg`, `main` への Push / PR | Lint, Typecheck, Unit Test, Build の品質ゲート（Security Audit は非ブロッキングの別ジョブ） |
+| `.github/workflows/deploy-stg-preview.yml` | `stg` への Push / `stg`・`main` 向け PR | `CLOUDFLARE_ENV=staging` でビルドし、Push 時は `capsule-tasks-stg` へ `wrangler deploy`、PR 時は `wrangler versions upload --preview-alias pr-{PR番号}` で発行された **Preview URL** を PR コメント＆ Job Summary に自動投稿 |
+| `.github/workflows/deploy-production.yml` | `main` への Push | `production` Environment 上で品質チェック通過後に `wrangler deploy` で本番環境へデプロイ |
 
 * **GitHub Repository Secrets 設定項目**:
   * `CLOUDFLARE_API_TOKEN`: Cloudflare Workers の編集・デプロイ権限を持つ API トークン
   * `CLOUDFLARE_ACCOUNT_ID`: Cloudflare アカウント ID
-  * （Cloudflare Worker 側の Secret として `wrangler secret put GEMINI_API_KEY` を設定）
+  * `package.json` / `wrangler.jsonc` が存在するのにこれらが未設定の場合、デプロイ系ワークフローは失敗します（デプロイ漏れの検知のため）。
+  * （Cloudflare Worker 側の Secret として `wrangler secret put GEMINI_API_KEY` を設定。Secret は Worker ごとに独立しているため、ステージング Worker `capsule-tasks-stg` にも個別に設定すること）
+* **GitHub Environment `production`**: 本番デプロイジョブは `production` Environment で実行されます。Settings → Environments で Required reviewers の設定、および本番用 Secrets の Environment スコープへの移行を推奨します。
