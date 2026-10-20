@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.wrangler/
+coverage/
+*.tsbuildinfo
+package-lock.json
+pnpm-lock.yaml
+task_gacha_requirements.md
+AGENTS.md
+tasks/
+.agents/
+.claude/

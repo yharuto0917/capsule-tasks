@@ -14,8 +14,9 @@ dist/
 # Test & coverage
 coverage/
 
-# TypeScript cache
+# TypeScript cache & logs
 *.tsbuildinfo
+*.log
 
 # OS & Editor files
 .DS_Store
@@ -23,3 +24,9 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Agent local configs
+.agents/
+.claude/
+pnpm-lock.yaml
+pnpm-workspace.yaml

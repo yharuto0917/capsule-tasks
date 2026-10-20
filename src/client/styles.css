@@ -1,0 +1,121 @@
+@import 'tailwindcss';
+
+@layer base {
+  :root {
+    --font-sans: 'Zen Maru Gothic', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-display: 'Fredoka', 'Mochiy Pop One', 'Zen Maru Gothic', sans-serif;
+    --font-toy: 'Mochiy Pop One', 'Zen Maru Gothic', sans-serif;
+    --toy-ink: #1e1b18;
+    --toy-red: #ef3e36;
+    --toy-red-dark: #b81d13;
+    --toy-cream: #fff8ec;
+    --toy-cream-deep: #f4e6ce;
+    --toy-yellow: #ffbe0b;
+    --toy-blue: #00a8e8;
+    --toy-mint: #10b981;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100dvh;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: var(--font-sans);
+    color: var(--toy-ink);
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-toy {
+  font-family: var(--font-toy);
+}
+
+/* デスクトップ背景：カラフルなおもちゃ部屋のドットパターン */
+.toy-room-backdrop {
+  background-color: #f7ebd9;
+  background-image:
+    radial-gradient(#ef3e36 1.5px, transparent 1.5px), radial-gradient(#00a8e8 1.5px, #f7ebd9 1.5px);
+  background-size: 36px 36px;
+  background-position:
+    0 0,
+    18px 18px;
+}
+
+/* ガチャ筐体メインボディ（赤いABS樹脂筐体＋立体インナーフレーム） */
+.toy-cabinet-body {
+  background: linear-gradient(180deg, #ff5449 0%, #ef3e36 18%, #e02b22 88%, #c51f17 100%);
+  box-shadow:
+    inset 0 4px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -6px 0 rgba(120, 14, 8, 0.45);
+}
+
+/* クリーム色のおもちゃパネル（Claymorphism / ABS成形パネル） */
+.toy-cream-panel {
+  background: linear-gradient(180deg, #fffdf9 0%, #fff6e5 100%);
+  border: 3px solid #1e1b18;
+  box-shadow:
+    inset 0 3px 0 #ffffff,
+    inset 0 -3px 0 #ead8bc,
+    0 5px 0 #1e1b18;
+}
+
+/* 透明アクリルドーム窓（Three.js カプセルショーケース） */
+.toy-acrylic-dome {
+  background: radial-gradient(
+    circle at 50% 36%,
+    #ffffff 0%,
+    #e0f4ff 52%,
+    #bfe6ff 85%,
+    #9fd8fc 100%
+  );
+  border: 4px solid #1e1b18;
+  box-shadow:
+    inset 0 8px 18px rgba(255, 255, 255, 0.9),
+    inset 0 -10px 20px rgba(14, 116, 144, 0.22),
+    0 6px 0 #1e1b18;
+}
+
+/* 立体プッシュボタン（おもちゃの物理スイッチ感） */
+.toy-push-btn {
+  border: 3px solid #1e1b18;
+  box-shadow:
+    inset 0 3px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.14),
+    0 5px 0 #1e1b18;
+  transition:
+    transform 100ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 100ms ease;
+}
+
+.toy-push-btn:active:not(:disabled) {
+  transform: translateY(4px);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.4),
+    0 1px 0 #1e1b18;
+}
+
+/* 筐体コーナーのプラスネジ装飾 */
+.toy-screw {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #e2e8f0 0%, #94a3b8 100%);
+  border: 2px solid #1e1b18;
+}
+.toy-screw::after {
+  content: '';
+  position: absolute;
+  inset: 2px 1px;
+  height: 1.5px;
+  background: #1e1b18;
+  top: 50%;
+  transform: translateY(-50%) rotate(-35deg);
+}
