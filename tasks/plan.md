@@ -118,6 +118,7 @@ flowchart TD
     T1_4 --> T1_7["Task 1.7: ガチャ演出・カプセル質感・UI/UX改善と演出強化"]
     T1_6 --> T1_7
     T1_1 --> T1_8["Task 1.8: 開発ガイドライン (AGENTS.md) 策定・運用ルール明文化"]
+    T1_8 --> T1_9["Task 1.9: Development/stgブランチ・Cloudflare Preview・CI/CD構築"]
 
     T1_5 --> T2_1["Task 2.1: 画像/PDF＋音声の複合マルチモーダルタスク抽出"]
     T1_6 --> T2_2["Task 2.2: カプセル排出時の非同期メダルプリフェッチ機構"]
@@ -239,6 +240,19 @@ flowchart TD
   * [ ] PRが作成され、ガイドラインがリポジトリルートに反映されること。
 * **想定変更ファイル**：`AGENTS.md`, `tasks/plan.md`, `tasks/todo.md`
 * **規模**：S（3ファイル）
+
+#### Task 1.9: 開発・ステージング環境（Development / stg ブランチ）と Cloudflare Workers Preview / CI-CD（DevOps）の構築
+* **対応要件**：セクション 6: 非機能要件・技術仕様、`AGENTS.md`（ブランチ戦略・CI/CD）
+* **実装内容**：
+  * **3階層ブランチ環境の設置**: 日常開発統合用の `Development` ブランチ、ステージング検証用の `stg` ブランチ、本番リリース用の `main` ブランチを構築（`feature/*` → `Development` → `stg` → `main`）。
+  * **Cloudflare Workers Preview URL & CI/CD 自動化**: `.github/workflows/ci.yml`（Lint / Typecheck / Test / Build / Audit 品質ゲート）、`.github/workflows/deploy-stg-preview.yml`（`CLOUDFLARE_ENV=staging` ビルドによるステージング Worker `capsule-tasks-stg` へのデプロイ、および PR 時の `wrangler versions upload --preview-alias pr-{PR番号}` による Preview URL 自動発行＆PRコメント投稿）、`.github/workflows/deploy-production.yml`（`main` マージ時の本番自動デプロイ）の実装。
+  * **DevOps ガバナンス整備**: `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`, `.gitignore`, `.editorconfig` の整備および `wrangler.jsonc` の `preview_urls: true` 仕様化。
+* **受け入れ条件（Acceptance Criteria）**：
+  * [ ] `Development` および `stg` ブランチがリモートに設置され、機能PRの統合から `stg` での Cloudflare Workers Preview URL 検証、`main` 本番リリースまでのパイプラインが構築されていること。
+  * [ ] CI/CD ワークフロー・PRテンプレート・Dependabot が整備されていること。
+  * [ ] 本Task（#21）が親Issue（#1）のSub-issueとして紐付けられ、GitHub Project（#3）に登録されていること。
+* **想定変更ファイル**：`.github/workflows/ci.yml`, `.github/workflows/deploy-stg-preview.yml`, `.github/workflows/deploy-production.yml`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`, `.gitignore`, `.editorconfig`, `AGENTS.md`, `tasks/plan.md`, `tasks/todo.md`
+* **規模**：M（8〜10ファイル）
 
 ---
 

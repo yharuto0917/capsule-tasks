@@ -1,0 +1,166 @@
+name: Deploy Staging & Cloudflare Workers Preview
+
+on:
+  push:
+    branches:
+      - stg
+  pull_request:
+    branches:
+      - stg
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+defaults:
+  run:
+    # shell 未指定だと `bash -e` となり pipefail が効かず、`| tee` で wrangler の失敗が握り潰されるため明示する
+    shell: bash
+
+env:
+  # @cloudflare/vite-plugin はビルド時に環境を確定させる（`wrangler deploy --env` は無視される）ため、
+  # ステージング Worker（capsule-tasks-stg）向けにビルドする
+  CLOUDFLARE_ENV: staging
+
+jobs:
+  deploy-preview:
+    name: Deploy to Cloudflare Workers Staging / Preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check project & Cloudflare credentials readiness
+        id: readiness
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          if [ ! -f "package.json" ] || [ ! -f "wrangler.jsonc" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "reason=package.json or wrangler.jsonc not yet present (awaiting Task 1.1 merge)." >> "$GITHUB_OUTPUT"
+          elif [ "$IS_FORK_PR" = "true" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "reason=Secrets are not available for pull requests from forks." >> "$GITHUB_OUTPUT"
+          elif [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID secret is not configured."
+            exit 1
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notice when skipped
+        if: steps.readiness.outputs.ready == 'false'
+        run: |
+          echo "### ℹ️ Cloudflare Workers Preview Deployment Skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Reason**: ${{ steps.readiness.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Node.js
+        if: steps.readiness.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        if: steps.readiness.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Build application (staging)
+        if: steps.readiness.outputs.ready == 'true'
+        run: npm run build
+
+      - name: Deploy Staging Worker (push to stg / manual)
+        id: cf_stg
+        if: steps.readiness.outputs.ready == 'true' && github.event_name != 'pull_request'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          OUT=$(npx wrangler deploy 2>&1 | tee /dev/stderr)
+          STG_URL=$(echo "$OUT" | grep -Eo 'https://[a-zA-Z0-9._-]+\.workers\.dev' | head -n 1 || true)
+
+          echo "### 🚀 Cloudflare Workers Staging Deployed (stg)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Staging URL**: ${STG_URL:-N/A}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Preview Version (pull request)
+        id: cf_preview
+        if: steps.readiness.outputs.ready == 'true' && github.event_name == 'pull_request'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # PR ごとに alias を分け、複数PRが同じ Preview URL を上書きし合わないようにする
+          PREVIEW_ALIAS: pr-${{ github.event.pull_request.number }}
+        run: |
+          OUT=$(npx wrangler versions upload --preview-alias "$PREVIEW_ALIAS" 2>&1 | tee /dev/stderr)
+
+          # 出力順に依存しないよう、wrangler のラベルで抽出する
+          PREVIEW_URL=$(echo "$OUT" | sed -n 's/.*Version Preview URL: *\(https:[^ ]*\).*/\1/p' | head -n 1)
+          ALIAS_URL=$(echo "$OUT" | sed -n 's/.*Version Preview Alias URL: *\(https:[^ ]*\).*/\1/p' | head -n 1)
+
+          if [ -z "$PREVIEW_URL" ]; then
+            echo "::error::Preview URL was not issued. Check \"preview_urls\": true in wrangler.jsonc (env.staging) and that capsule-tasks-stg is deployed."
+            exit 1
+          fi
+
+          echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
+          echo "alias_url=${ALIAS_URL}" >> "$GITHUB_OUTPUT"
+
+          echo "### 🚀 Cloudflare Workers Preview Uploaded (${PREVIEW_ALIAS})" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 種別 | URL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| :--- | :--- |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Preview Alias URL (${PREVIEW_ALIAS})** | ${ALIAS_URL:-N/A} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Version Preview URL** | ${PREVIEW_URL} |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment Preview URL on Pull Request
+        if: steps.readiness.outputs.ready == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.cf_preview.outputs.preview_url }}
+          ALIAS_URL: ${{ steps.cf_preview.outputs.alias_url }}
+        with:
+          script: |
+            const previewUrl = process.env.PREVIEW_URL;
+            const aliasUrl = process.env.ALIAS_URL;
+            const headSha = context.payload.pull_request.head.sha.slice(0, 7);
+            const alias = `pr-${context.issue.number}`;
+            const marker = '<!-- cloudflare-workers-preview-comment -->';
+            const body = `${marker}
+            ### 🚀 Cloudflare Workers Preview URL (staging)
+            ステージング Worker（\`capsule-tasks-stg\`）へのプレビュー版アップロードが完了しました！スマホ画面幅（320px〜430px）での動作確認にご利用ください。
+
+            | 環境 | Preview URL | Commit |
+            | :--- | :--- | :--- |
+            | **PR Alias (\`${alias}\`)** | ${aliasUrl || 'N/A'} | \`${headSha}\` |
+            | **Immutable Version Preview** | ${previewUrl || 'N/A'} | \`${headSha}\` |
+            `;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

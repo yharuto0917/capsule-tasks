@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Task 1.1 で package.json が追加されるまでは npm の更新チェックがエラーになるが、実害はないため許容する
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "Development"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "enhancement"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "Development"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3

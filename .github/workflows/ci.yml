@@ -1,0 +1,84 @@
+name: CI Quality Gate
+
+on:
+  push:
+    branches:
+      - Development
+      - stg
+      - main
+  pull_request:
+    branches:
+      - Development
+      - stg
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint, Typecheck, Test & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check if package.json exists
+        id: check_pkg
+        run: |
+          if [ -f "package.json" ]; then
+            echo "has_pkg=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_pkg=false" >> "$GITHUB_OUTPUT"
+            echo "package.json not found yet (pre-Task 1.1). Skipping Node build steps."
+          fi
+
+      - name: Setup Node.js
+        if: steps.check_pkg.outputs.has_pkg == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        if: steps.check_pkg.outputs.has_pkg == 'true'
+        run: npm ci
+
+      - name: Run Linter
+        if: steps.check_pkg.outputs.has_pkg == 'true'
+        run: npm run lint
+
+      - name: Run Type Check
+        if: steps.check_pkg.outputs.has_pkg == 'true'
+        run: npx tsc --noEmit
+
+      - name: Run Unit Tests
+        if: steps.check_pkg.outputs.has_pkg == 'true'
+        run: npm test -- --run
+
+      - name: Build Application (Vite + React & Hono Worker)
+        if: steps.check_pkg.outputs.has_pkg == 'true'
+        run: npm run build
+
+  audit:
+    name: Security Audit (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # 推移的依存の脆弱性公開だけで無関係なPRがすべて止まらないよう、品質ゲートから分離して非ブロッキングにする
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run npm audit
+        run: |
+          if [ ! -f "package-lock.json" ]; then
+            echo "package-lock.json not found yet (pre-Task 1.1). Skipping audit."
+            exit 0
+          fi
+          npm audit --audit-level=high

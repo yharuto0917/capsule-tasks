@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.wrangler/
+
+# Environment variables & local secrets (NEVER commit)
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+
+# Test & coverage
+coverage/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
