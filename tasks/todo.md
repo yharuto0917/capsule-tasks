@@ -8,6 +8,7 @@
 - [ ] **Task 1.5**: Hono Gemini API プロキシと `gemini-3.8-flash` 音声ボヤき・常連スタンプ補充機能の実装
 - [ ] **Task 1.6**: `gemini-nano-banana-2.1` 記念メダル動的生成 Hono API とカプセル開封モーダル・コレクション棚（基本版）の実装
 - [ ] **Task 1.7**: ガチャ演出・カプセル質感・マイクロインタラクション等のUI/UX改善と演出強化
+- [ ] **Task 1.8**: 開発ガイドライン（AGENTS.md）策定と割り込みタスク運用ルールの明文化
 
 ### Checkpoint: Phase 1 Complete
 - [ ] `npm test`, `npm run lint`, `npm run build` がすべて通過する

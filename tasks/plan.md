@@ -117,6 +117,7 @@ flowchart TD
     T1_5 --> T1_6
     T1_4 --> T1_7["Task 1.7: ガチャ演出・カプセル質感・UI/UX改善と演出強化"]
     T1_6 --> T1_7
+    T1_1 --> T1_8["Task 1.8: 開発ガイドライン (AGENTS.md) 策定・運用ルール明文化"]
 
     T1_5 --> T2_1["Task 2.1: 画像/PDF＋音声の複合マルチモーダルタスク抽出"]
     T1_6 --> T2_2["Task 2.2: カプセル排出時の非同期メダルプリフェッチ機構"]
@@ -226,6 +227,18 @@ flowchart TD
   * [ ] モバイル端末（375x812等）の片手操作で指が引っかかることなく滑らかに操作できること。
 * **想定変更ファイル**：`src/client/components/capsule-stage.tsx`, `src/client/components/capsule-machine-visual.tsx`, `src/client/components/medal-reveal-modal.tsx`, `src/client/styles/animations.css`, `tests/capsule-stage.test.tsx`
 * **規模**：M（4〜5ファイル）
+
+#### Task 1.8: 開発ガイドライン（AGENTS.md）策定と割り込みタスク運用ルールの明文化
+* **対応要件**：セクション 1: プロジェクト概要・目的、`AGENTS.md`
+* **実装内容**：
+  * **AIエージェント開発ガイドラインの策定**: 品質管理（テスト・リンター・フォーマッター通過必須、モバイル実機相当ブラウザUI検証義務）、命名規約（`kebab-case.tsx`, `PascalCase`, `useCamelCase`）、ブランチ/Worktree戦略、コミット規約（日本語、理由重視、モデル名併記）の明文化。
+  * **割り込みタスク運用ルールの制約化**: 開発進行中の仕様変更や追加要件発生時における3つの配置パターン（現行Phase必須子Issue / 後続Phase子Issue / Backlog）の判断フロー策定、親Issue Sub-issues紐付け、チェックリスト追記、GitHub Project登録の義務化。
+* **受け入れ条件（Acceptance Criteria）**：
+  * [ ] `AGENTS.md` に開発規約および割り込みタスクのIssue配置ルールが明確に記載されていること。
+  * [ ] 本Taskが親Issue（#1）のSub-issueとして正しく紐付けられ、親のチェックリストに反映されていること。
+  * [ ] PRが作成され、ガイドラインがリポジトリルートに反映されること。
+* **想定変更ファイル**：`AGENTS.md`, `tasks/plan.md`, `tasks/todo.md`
+* **規模**：S（3ファイル）
 
 ---
 
