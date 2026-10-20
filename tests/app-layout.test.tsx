@@ -1,8 +1,12 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../src/client/app';
 import { HeaderStatusBar } from '../src/client/components/header-status-bar';
 import serverApp from '../src/server/index';
+
+beforeEach(() => {
+  window.localStorage.clear();
+});
 
 describe('HeaderStatusBar', () => {
   it('所持コイン、連続コンボ数、筐体内の残りカプセル数を正しく表示する', () => {

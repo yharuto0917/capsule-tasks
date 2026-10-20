@@ -2,37 +2,11 @@ import React, { useState } from 'react';
 import { Award, Hammer, PlusCircle, RefreshCw, Sparkles, Timer, Trash2, Zap } from 'lucide-react';
 import { HeaderStatusBar } from './components/header-status-bar';
 import { ThreeCapsuleCanvas } from './components/three-capsule-canvas';
-
-interface PreviewCapsule {
-  id: string;
-  title: string;
-  capsuleColor: 'blue' | 'red' | 'gold';
-  rarityBoost: number;
-}
-
-const INITIAL_CAPSULES: PreviewCapsule[] = [
-  {
-    id: 'cap_demo_001',
-    title: '企画書ドラフトを提出する',
-    capsuleColor: 'gold',
-    rarityBoost: 2.0,
-  },
-  {
-    id: 'cap_demo_002',
-    title: '溜まった洗濯物をたたむ',
-    capsuleColor: 'blue',
-    rarityBoost: 1.0,
-  },
-  {
-    id: 'cap_demo_003',
-    title: '経費精算の領収書をアップロード',
-    capsuleColor: 'red',
-    rarityBoost: 1.5,
-  },
-];
+import { useCapsuleStore } from './hooks/use-capsule-store';
+import type { CapsuleColor } from '../shared/schemas';
 
 const CAPSULE_BADGE_CONFIG: Record<
-  PreviewCapsule['capsuleColor'],
+  CapsuleColor,
   {
     label: string;
     bgClass: string;
@@ -53,16 +27,21 @@ const CAPSULE_BADGE_CONFIG: Record<
 };
 
 export const App: React.FC = () => {
-  const [coins, setCoins] = useState<number>(150);
-  const [todayCombo, setTodayCombo] = useState<number>(3);
-  const [capsules, setCapsules] = useState<PreviewCapsule[]>(INITIAL_CAPSULES);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const {
+    capsules,
+    activeCapsule,
+    playerState,
+    supplyCapsules,
+    passActiveCapsule,
+    recycleActiveCapsule,
+    crackActiveCapsule,
+    toggleSound,
+  } = useCapsuleStore();
+
   const [crackProgress, setCrackProgress] = useState<number>(0);
   const [interactionTrigger, setInteractionTrigger] = useState<number>(0);
   const [statusFeedback, setStatusFeedback] =
     useState<string>('カプセルを連打・長押ししてパカッと開封しよう！');
-
-  const activeCapsule = capsules[0] ?? null;
 
   const handleTapCapsule = () => {
     if (!activeCapsule) return;
@@ -70,10 +49,12 @@ export const App: React.FC = () => {
     const nextProgress = crackProgress + 1;
     if (nextProgress >= 3) {
       setCrackProgress(0);
-      setCoins((prev) => prev + 30);
-      setTodayCombo((prev) => prev + 1);
-      setCapsules((prev) => prev.slice(1));
-      setStatusFeedback(`「${activeCapsule.title}」を開封完了！＋30コイン獲得`);
+      const result = crackActiveCapsule();
+      if (result) {
+        setStatusFeedback(
+          `「${result.crackedTask.title}」を開封完了！＋${result.coinsEarned}コイン（${result.awardedRarity}メダル抽選）`,
+        );
+      }
     } else {
       setCrackProgress(nextProgress);
       setStatusFeedback(`ヒビ割れ進行中 (${nextProgress}/3)... もう1回タップ！`);
@@ -82,13 +63,14 @@ export const App: React.FC = () => {
 
   const handlePassCapsule = () => {
     if (capsules.length <= 1) {
+      passActiveCapsule();
       setInteractionTrigger((prev) => prev + 1);
       setStatusFeedback('筐体内のカプセルはこれ1個だけです');
       return;
     }
     setCrackProgress(0);
     setInteractionTrigger((prev) => prev + 1);
-    setCapsules((prev) => [...prev.slice(1), prev[0]]);
+    passActiveCapsule();
     setStatusFeedback('ハンドルを回して次のカプセルを排出しました！');
   };
 
@@ -96,21 +78,18 @@ export const App: React.FC = () => {
     if (!activeCapsule) return;
     setCrackProgress(0);
     setInteractionTrigger((prev) => prev + 1);
-    setCoins((prev) => prev + 5);
-    setCapsules((prev) => prev.slice(1));
+    recycleActiveCapsule();
     setStatusFeedback('リサイクル完了！＋5コインに変換しました');
   };
 
   const handleQuickSupply = () => {
-    const newId = `cap_${Date.now()}`;
-    const newCapsule: PreviewCapsule = {
-      id: newId,
+    supplyCapsules({
       title: '机の上を5分だけ片付ける',
       capsuleColor: 'blue',
       rarityBoost: 1.0,
-    };
-    setCapsules((prev) => [...prev, newCapsule]);
-    setCoins((prev) => prev + 10);
+      medalPrompt:
+        "A shining bronze commemorative medal featuring a sparkling tidy desk in high relief, engraved text 'DESK CLEANER' along the rim, 3D metallic render",
+    });
     setInteractionTrigger((prev) => prev + 1);
     setStatusFeedback('カプセル補充ボーナス！＋10コイン獲得');
   };
@@ -131,11 +110,11 @@ export const App: React.FC = () => {
       >
         {/* 1. 上部ステータスバー（ガチャ筐体トップパネル） */}
         <HeaderStatusBar
-          coins={coins}
-          todayCombo={todayCombo}
+          coins={playerState.coins}
+          todayCombo={playerState.todayCombo}
           remainingCapsules={capsules.length}
-          soundEnabled={soundEnabled}
-          onToggleSound={() => setSoundEnabled((prev) => !prev)}
+          soundEnabled={playerState.soundEnabled}
+          onToggleSound={toggleSound}
         />
 
         {/* 2. 中央メイン画面（アクリルドーム窓＆Three.js 3Dカプセルステージ） */}

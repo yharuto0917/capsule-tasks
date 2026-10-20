@@ -2,7 +2,7 @@
 
 ## Phase 1：MVP（コア画面・ローカル永続化基盤・AI一気通貫ループの実装）
 - [x] **Task 1.1**: Vite+React（フロントエンド）＆ Hono+Cloudflare Workers（バックエンド）基盤構築とモバイル共通レイアウト実装
-- [ ] **Task 1.2**: データモデル定義と localStorage / IndexedDB 永続化フックの実装
+- [x] **Task 1.2**: データモデル定義と localStorage / IndexedDB 永続化フックの実装
 - [ ] **Task 1.3**: Web Audio API シンセサイザー効果音＆ハプティクス演出フックの実装
 - [ ] **Task 1.4**: メイン画面（ガチャステージ）と1画面1カプセル操作UI（開封・先送り・リサイクル）の実装
 - [ ] **Task 1.5**: Hono Gemini API プロキシと `gemini-3.8-flash` 音声ボヤき・常連スタンプ補充機能の実装
