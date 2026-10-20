@@ -233,6 +233,56 @@ describe('3. localStorage 永続化＆タスクキュー管理フック (useCaps
     expect(afterSkipDays.current.capsules).toHaveLength(4);
     expect(afterSkipDays.current.playerState.todayCombo).toBe(0);
   });
+
+  it('古い状態の別タブで操作しても、localStorage の最新状態を読み直して直列更新し、他タブのタスク・コインを消失させない', () => {
+    const fixedDate = new Date('2026-10-20T12:00:00+09:00');
+    const { result: tabA } = renderHook(() => useCapsuleStore({ now: () => fixedDate }));
+    const { result: tabB } = renderHook(() => useCapsuleStore({ now: () => fixedDate }));
+
+    // タブBでタスクを補充（+10コイン -> 160コイン、カプセル4件）
+    act(() => {
+      tabB.current.supplyStampCapsule('買い物', 'blue');
+    });
+    expect(tabB.current.capsules).toHaveLength(4);
+    expect(tabB.current.playerState.coins).toBe(160);
+
+    // StorageEvent が発火する前（または古い状態のまま）のタブAでさらにタスクを補充
+    act(() => {
+      tabA.current.supplyStampCapsule('運動', 'red');
+    });
+
+    // タブBで追加したタスクとコインが上書き消失せず、合算（カプセル5件、170コイン）されていること
+    expect(tabA.current.capsules).toHaveLength(5);
+    expect(tabA.current.playerState.coins).toBe(170);
+    expect(tabA.current.capsules.map((c) => c.title)).toContain('買い物');
+    expect(tabA.current.capsules.map((c) => c.title)).toContain('運動');
+  });
+
+  it('window.localStorage の取得自体が SecurityError 等で例外を投げる環境でもクラッシュせず動作する', () => {
+    const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access is denied for this document.', 'SecurityError');
+      },
+    });
+
+    try {
+      const { result } = renderHook(() => useCapsuleStore());
+      expect(result.current.capsules).toHaveLength(3);
+      expect(result.current.playerState.coins).toBe(150);
+
+      act(() => {
+        result.current.supplyStampCapsule('掃除', 'blue');
+      });
+      expect(result.current.capsules).toHaveLength(4);
+      expect(result.current.playerState.coins).toBe(160);
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(window, 'localStorage', originalDescriptor);
+      }
+    }
+  });
 });
 
 describe('4. IndexedDB メダル図鑑・画像データ永続化フック (useMedalStorage)', () => {

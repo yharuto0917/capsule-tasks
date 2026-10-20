@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CAPSULE_COLOR_RARITY_BOOST,
   createDefaultPlayerState,
@@ -85,32 +85,71 @@ function buildDefaultMedalPrompt(title: string, color: CapsuleColor): string {
   return `A ${materialByColor[color]} commemorative medal celebrating the completion of "${title}", 3D metallic relief, studio lighting, clean square icon`;
 }
 
-function loadInitialCapsulesFromStorage(): CapsuleTask[] {
-  if (typeof window === 'undefined' || !window.localStorage) {
-    return [...DEFAULT_INITIAL_CAPSULE_TASKS];
-  }
+/**
+ * ブラウザでストレージアクセスが拒否されている場合（SecurityError等）でも
+ * `window.localStorage` プロパティ参照自体でクラッシュしないよう try ブロック内で安全に取得する。
+ */
+function getSafeLocalStorage(): Storage | null {
   try {
-    const raw = window.localStorage.getItem(CAPSULE_QUEUE_STORAGE_KEY);
-    if (raw === null) {
-      return [...DEFAULT_INITIAL_CAPSULE_TASKS];
+    if (typeof window === 'undefined') {
+      return null;
     }
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [...DEFAULT_INITIAL_CAPSULE_TASKS];
-    }
-    return parsed.filter(isValidCapsuleTask).filter((task) => task.status === 'pending');
+    const storage = window.localStorage;
+    return storage ?? null;
   } catch {
-    return [...DEFAULT_INITIAL_CAPSULE_TASKS];
+    return null;
   }
 }
 
-function loadInitialPlayerStateFromStorage(todayKey: string): PlayerState {
-  const fallback = createDefaultPlayerState(todayKey);
-  if (typeof window === 'undefined' || !window.localStorage) {
-    return fallback;
-  }
+function readCapsulesFromStorage(fallback: CapsuleTask[]): CapsuleTask[] {
   try {
-    const raw = window.localStorage.getItem(PLAYER_STATE_STORAGE_KEY);
+    const storage = getSafeLocalStorage();
+    if (!storage) {
+      return [...fallback];
+    }
+    const raw = storage.getItem(CAPSULE_QUEUE_STORAGE_KEY);
+    if (raw === null) {
+      return [...fallback];
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [...fallback];
+    }
+    return parsed.filter(isValidCapsuleTask).filter((task) => task.status === 'pending');
+  } catch {
+    return [...fallback];
+  }
+}
+
+function writeCapsulesToStorage(nextCapsules: CapsuleTask[]): void {
+  try {
+    const storage = getSafeLocalStorage();
+    if (!storage) return;
+    storage.setItem(CAPSULE_QUEUE_STORAGE_KEY, JSON.stringify(nextCapsules));
+  } catch {
+    // ストレージ拒否・容量超過時などはアプリ進行を止めない
+  }
+}
+
+function readPlayerStateFromStorage(todayKey: string, fallbackBase?: PlayerState): PlayerState {
+  const fallback = fallbackBase
+    ? {
+        ...fallbackBase,
+        todayCombo: resolveTodayComboForDate(
+          fallbackBase.todayCombo,
+          fallbackBase.lastActiveDate,
+          todayKey,
+        ),
+        lastActiveDate: todayKey,
+      }
+    : createDefaultPlayerState(todayKey);
+
+  try {
+    const storage = getSafeLocalStorage();
+    if (!storage) {
+      return fallback;
+    }
+    const raw = storage.getItem(PLAYER_STATE_STORAGE_KEY);
     if (raw === null) {
       return fallback;
     }
@@ -162,51 +201,136 @@ function loadInitialPlayerStateFromStorage(todayKey: string): PlayerState {
   }
 }
 
+function writePlayerStateToStorage(nextPlayerState: PlayerState): void {
+  try {
+    const storage = getSafeLocalStorage();
+    if (!storage) return;
+    storage.setItem(PLAYER_STATE_STORAGE_KEY, JSON.stringify(nextPlayerState));
+  } catch {
+    // ストレージ拒否・容量超過時などはアプリ進行を止めない
+  }
+}
+
 const defaultGetNow = () => new Date();
 
 export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsuleStoreReturn {
   const getNow = options.now ?? defaultGetNow;
   const randomFn = options.randomFn ?? Math.random;
 
-  const [capsules, setCapsules] = useState<CapsuleTask[]>(() => loadInitialCapsulesFromStorage());
-  const [playerState, setPlayerState] = useState<PlayerState>(() =>
-    loadInitialPlayerStateFromStorage(formatLocalDateKey(getNow())),
-  );
+  const [capsules, setCapsules] = useState<CapsuleTask[]>(() => {
+    const initial = readCapsulesFromStorage(DEFAULT_INITIAL_CAPSULE_TASKS);
+    writeCapsulesToStorage(initial);
+    return initial;
+  });
 
-  // localStorage への同期保存（カプセルキュー）
+  const [playerState, setPlayerState] = useState<PlayerState>(() => {
+    const todayKey = formatLocalDateKey(getNow());
+    const initial = readPlayerStateFromStorage(todayKey);
+    writePlayerStateToStorage(initial);
+    return initial;
+  });
+
+  const capsulesRef = useRef<CapsuleTask[]>(capsules);
+  const playerStateRef = useRef<PlayerState>(playerState);
+
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    try {
-      window.localStorage.setItem(CAPSULE_QUEUE_STORAGE_KEY, JSON.stringify(capsules));
-    } catch {
-      // ストレージ容量超過時などはアプリ進行を止めない
-    }
+    capsulesRef.current = capsules;
   }, [capsules]);
 
-  // localStorage への同期保存（PlayerState）
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    try {
-      window.localStorage.setItem(PLAYER_STATE_STORAGE_KEY, JSON.stringify(playerState));
-    } catch {
-      // ストレージ容量超過時などはアプリ進行を止めない
-    }
+    playerStateRef.current = playerState;
   }, [playerState]);
 
-  const syncDateComboState = useCallback(() => {
-    const todayKey = formatLocalDateKey(getNow());
-    setPlayerState((prev) => {
-      const nextCombo = resolveTodayComboForDate(prev.todayCombo, prev.lastActiveDate, todayKey);
-      if (prev.todayCombo === nextCombo && prev.lastActiveDate === todayKey) {
-        return prev;
+  /**
+   * タブ間での更新競合・上書き消失を防ぐため、更新直前に必ず localStorage から最新状態を読み直して
+   * ミューテーションを直列適用し、即座に localStorage と React ステートの双方へ反映する。
+   */
+  const commitStoreTransaction = useCallback(
+    (
+      mutator: (
+        latestCapsules: CapsuleTask[],
+        latestPlayerState: PlayerState,
+        todayKey: string,
+      ) => {
+        nextCapsules?: CapsuleTask[];
+        nextPlayerState?: PlayerState;
+      },
+    ) => {
+      const todayKey = formatLocalDateKey(getNow());
+      const latestCapsules = readCapsulesFromStorage(capsulesRef.current);
+      const latestPlayerState = readPlayerStateFromStorage(todayKey, playerStateRef.current);
+
+      const { nextCapsules, nextPlayerState } = mutator(
+        latestCapsules,
+        latestPlayerState,
+        todayKey,
+      );
+
+      if (nextCapsules !== undefined) {
+        capsulesRef.current = nextCapsules;
+        writeCapsulesToStorage(nextCapsules);
+        setCapsules(nextCapsules);
+      } else {
+        capsulesRef.current = latestCapsules;
+        setCapsules(latestCapsules);
       }
+
+      if (nextPlayerState !== undefined) {
+        playerStateRef.current = nextPlayerState;
+        writePlayerStateToStorage(nextPlayerState);
+        setPlayerState(nextPlayerState);
+      } else {
+        playerStateRef.current = latestPlayerState;
+        setPlayerState(latestPlayerState);
+      }
+    },
+    [getNow],
+  );
+
+  // 別タブで localStorage が更新された際に、アクティブタブ側の表示も即時同期する
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
+        return;
+      }
+      const handleStorage = (event: StorageEvent) => {
+        const todayKey = formatLocalDateKey(getNow());
+        if (event.key === null || event.key === CAPSULE_QUEUE_STORAGE_KEY) {
+          const syncedCapsules = readCapsulesFromStorage(DEFAULT_INITIAL_CAPSULE_TASKS);
+          capsulesRef.current = syncedCapsules;
+          setCapsules(syncedCapsules);
+        }
+        if (event.key === null || event.key === PLAYER_STATE_STORAGE_KEY) {
+          const syncedPlayer = readPlayerStateFromStorage(todayKey);
+          playerStateRef.current = syncedPlayer;
+          setPlayerState(syncedPlayer);
+        }
+      };
+      window.addEventListener('storage', handleStorage);
+      return () => {
+        window.removeEventListener('storage', handleStorage);
+      };
+    } catch {
+      return;
+    }
+  }, [getNow]);
+
+  const syncDateComboState = useCallback(() => {
+    commitStoreTransaction((_latestCapsules, latestPlayerState, todayKey) => {
+      const nextCombo = resolveTodayComboForDate(
+        latestPlayerState.todayCombo,
+        latestPlayerState.lastActiveDate,
+        todayKey,
+      );
       return {
-        ...prev,
-        todayCombo: nextCombo,
-        lastActiveDate: todayKey,
+        nextPlayerState: {
+          ...latestPlayerState,
+          todayCombo: nextCombo,
+          lastActiveDate: todayKey,
+        },
       };
     });
-  }, [getNow]);
+  }, [commitStoreTransaction]);
 
   const supplyCapsules = useCallback(
     (draftInput: ExtractedCapsuleTaskDraft | ExtractedCapsuleTaskDraft[]): CapsuleTask[] => {
@@ -219,7 +343,6 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
       const nowDate = getNow();
       const nowIso = nowDate.toISOString();
       const nowMs = nowDate.getTime();
-      const todayKey = formatLocalDateKey(nowDate);
 
       const createdTasks: CapsuleTask[] = validDrafts.map((draft, idx) => {
         const color: CapsuleColor = isValidCapsuleColor(draft.capsuleColor)
@@ -251,17 +374,23 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
 
       const bonusCoins = createdTasks.length * SUPPLY_BONUS_COINS_PER_CAPSULE;
 
-      setCapsules((prev) => [...prev, ...createdTasks]);
-      setPlayerState((prev) => ({
-        ...prev,
-        coins: prev.coins + bonusCoins,
-        todayCombo: resolveTodayComboForDate(prev.todayCombo, prev.lastActiveDate, todayKey),
-        lastActiveDate: todayKey,
+      commitStoreTransaction((latestCapsules, latestPlayerState, todayKey) => ({
+        nextCapsules: [...latestCapsules, ...createdTasks],
+        nextPlayerState: {
+          ...latestPlayerState,
+          coins: latestPlayerState.coins + bonusCoins,
+          todayCombo: resolveTodayComboForDate(
+            latestPlayerState.todayCombo,
+            latestPlayerState.lastActiveDate,
+            todayKey,
+          ),
+          lastActiveDate: todayKey,
+        },
       }));
 
       return createdTasks;
     },
-    [getNow],
+    [commitStoreTransaction, getNow],
   );
 
   const supplyStampCapsule = useCallback(
@@ -279,121 +408,152 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
   );
 
   const passActiveCapsule = useCallback((): CapsuleTask | null => {
-    if (capsules.length === 0) return null;
-    const current = capsules[0];
-    const updatedCurrent: CapsuleTask = {
-      ...current,
-      skipCount: current.skipCount + 1,
-    };
+    let passedResult: CapsuleTask | null = null;
 
-    setCapsules((prev) => {
-      if (prev.length === 0) return prev;
-      const head = { ...prev[0], skipCount: prev[0].skipCount + 1 };
-      if (prev.length === 1) {
-        return [head];
+    commitStoreTransaction((latestCapsules) => {
+      if (latestCapsules.length === 0) {
+        return {};
       }
-      return [...prev.slice(1), head];
+      const head: CapsuleTask = {
+        ...latestCapsules[0],
+        skipCount: latestCapsules[0].skipCount + 1,
+      };
+      passedResult = head;
+      const nextCapsules =
+        latestCapsules.length === 1 ? [head] : [...latestCapsules.slice(1), head];
+      return { nextCapsules };
     });
 
-    return updatedCurrent;
-  }, [capsules]);
+    return passedResult;
+  }, [commitStoreTransaction]);
 
   const recycleActiveCapsule = useCallback((): CapsuleTask | null => {
-    if (capsules.length === 0) return null;
-    const recycled: CapsuleTask = {
-      ...capsules[0],
-      status: 'recycled',
-    };
-    const todayKey = formatLocalDateKey(getNow());
+    let recycledResult: CapsuleTask | null = null;
 
-    setCapsules((prev) => prev.slice(1));
-    setPlayerState((prev) => ({
-      ...prev,
-      coins: prev.coins + RECYCLE_BONUS_COINS,
-      todayCombo: resolveTodayComboForDate(prev.todayCombo, prev.lastActiveDate, todayKey),
-      lastActiveDate: todayKey,
-    }));
+    commitStoreTransaction((latestCapsules, latestPlayerState, todayKey) => {
+      if (latestCapsules.length === 0) {
+        return {};
+      }
+      recycledResult = {
+        ...latestCapsules[0],
+        status: 'recycled',
+      };
+      return {
+        nextCapsules: latestCapsules.slice(1),
+        nextPlayerState: {
+          ...latestPlayerState,
+          coins: latestPlayerState.coins + RECYCLE_BONUS_COINS,
+          todayCombo: resolveTodayComboForDate(
+            latestPlayerState.todayCombo,
+            latestPlayerState.lastActiveDate,
+            todayKey,
+          ),
+          lastActiveDate: todayKey,
+        },
+      };
+    });
 
-    return recycled;
-  }, [capsules, getNow]);
+    return recycledResult;
+  }, [commitStoreTransaction]);
 
   const crackActiveCapsule = useCallback((): CrackCapsuleResult | null => {
-    if (capsules.length === 0) return null;
-    const target = capsules[0];
-    const todayKey = formatLocalDateKey(getNow());
+    let crackOutcome: CrackCapsuleResult | null = null;
 
-    // 日付変更を考慮した現在のコンボ数を取得し、今回の開封で +1 する
-    const baseCombo = resolveTodayComboForDate(
-      playerState.todayCombo,
-      playerState.lastActiveDate,
-      todayKey,
-    );
-    const updatedCombo = baseCombo + 1;
+    commitStoreTransaction((latestCapsules, latestPlayerState, todayKey) => {
+      if (latestCapsules.length === 0) {
+        return {};
+      }
+      const target = latestCapsules[0];
 
-    // todayCombo とカプセルの rarityBoost に基づいてメダルレア度を抽選
-    const awardedRarity = rollMedalRarity(
-      {
-        todayCombo: updatedCombo,
-        rarityBoost: target.rarityBoost,
-      },
-      randomFn,
-    );
+      // 日付変更を考慮した現在のコンボ数を取得し、今回の開封で +1 する
+      const baseCombo = resolveTodayComboForDate(
+        latestPlayerState.todayCombo,
+        latestPlayerState.lastActiveDate,
+        todayKey,
+      );
+      const updatedCombo = baseCombo + 1;
 
-    const coinsEarned = CRACK_BASE_COINS;
-    const crackedTask: CapsuleTask = {
-      ...target,
-      status: 'completed',
-    };
+      // todayCombo とカプセルの rarityBoost に基づいてメダルレア度を抽選
+      const awardedRarity = rollMedalRarity(
+        {
+          todayCombo: updatedCombo,
+          rarityBoost: target.rarityBoost,
+        },
+        randomFn,
+      );
 
-    setCapsules((prev) => prev.slice(1));
-    setPlayerState((prev) => ({
-      ...prev,
-      coins: prev.coins + coinsEarned,
-      totalCracked: prev.totalCracked + 1,
-      todayCombo: updatedCombo,
-      lastActiveDate: todayKey,
-    }));
+      const coinsEarned = CRACK_BASE_COINS;
+      const crackedTask: CapsuleTask = {
+        ...target,
+        status: 'completed',
+      };
 
-    return {
-      crackedTask,
-      awardedRarity,
-      coinsEarned,
-      updatedCombo,
-    };
-  }, [capsules, getNow, playerState.lastActiveDate, playerState.todayCombo, randomFn]);
+      crackOutcome = {
+        crackedTask,
+        awardedRarity,
+        coinsEarned,
+        updatedCombo,
+      };
+
+      return {
+        nextCapsules: latestCapsules.slice(1),
+        nextPlayerState: {
+          ...latestPlayerState,
+          coins: latestPlayerState.coins + coinsEarned,
+          totalCracked: latestPlayerState.totalCracked + 1,
+          todayCombo: updatedCombo,
+          lastActiveDate: todayKey,
+        },
+      };
+    });
+
+    return crackOutcome;
+  }, [commitStoreTransaction, randomFn]);
 
   const toggleSound = useCallback(() => {
-    setPlayerState((prev) => ({
-      ...prev,
-      soundEnabled: !prev.soundEnabled,
+    commitStoreTransaction((_latestCapsules, latestPlayerState) => ({
+      nextPlayerState: {
+        ...latestPlayerState,
+        soundEnabled: !latestPlayerState.soundEnabled,
+      },
     }));
-  }, []);
+  }, [commitStoreTransaction]);
 
-  const updateCustomStamps = useCallback((stamps: string[]) => {
-    const cleaned = stamps.map((s) => s.trim()).filter((s) => s.length > 0);
-    if (cleaned.length === 0) return;
-    setPlayerState((prev) => ({
-      ...prev,
-      customStamps: cleaned,
-    }));
-  }, []);
+  const updateCustomStamps = useCallback(
+    (stamps: string[]) => {
+      const cleaned = stamps.map((s) => s.trim()).filter((s) => s.length > 0);
+      if (cleaned.length === 0) return;
+      commitStoreTransaction((_latestCapsules, latestPlayerState) => ({
+        nextPlayerState: {
+          ...latestPlayerState,
+          customStamps: cleaned,
+        },
+      }));
+    },
+    [commitStoreTransaction],
+  );
 
   const spendCoins = useCallback(
     (amount: number): boolean => {
       const safeAmount = Math.floor(amount);
       if (!Number.isFinite(safeAmount) || safeAmount <= 0) return false;
-      if (playerState.coins < safeAmount) return false;
 
-      setPlayerState((prev) => {
-        if (prev.coins < safeAmount) return prev;
+      let spent = false;
+      commitStoreTransaction((_latestCapsules, latestPlayerState) => {
+        if (latestPlayerState.coins < safeAmount) {
+          return {};
+        }
+        spent = true;
         return {
-          ...prev,
-          coins: prev.coins - safeAmount,
+          nextPlayerState: {
+            ...latestPlayerState,
+            coins: latestPlayerState.coins - safeAmount,
+          },
         };
       });
-      return true;
+      return spent;
     },
-    [playerState.coins],
+    [commitStoreTransaction],
   );
 
   const activeCapsule = capsules[0] ?? null;
