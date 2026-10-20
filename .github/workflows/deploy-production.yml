@@ -1,0 +1,75 @@
+name: Deploy Production (Cloudflare Workers)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy-production:
+    name: Deploy to Cloudflare Workers Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check project & Cloudflare credentials readiness
+        id: readiness
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ ! -f "package.json" ] || [ ! -f "wrangler.jsonc" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "reason=package.json or wrangler.jsonc not yet present." >> "$GITHUB_OUTPUT"
+          elif [ -z "$CF_TOKEN" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "reason=CLOUDFLARE_API_TOKEN secret is not configured yet." >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notice when skipped
+        if: steps.readiness.outputs.ready == 'false'
+        run: |
+          echo "### ℹ️ Production Deployment Skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Reason**: ${{ steps.readiness.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Node.js
+        if: steps.readiness.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        if: steps.readiness.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Run quality checks before production deploy
+        if: steps.readiness.outputs.ready == 'true'
+        run: |
+          npm run lint
+          npx tsc --noEmit
+          npm test -- --run
+          npm run build
+
+      - name: Deploy to Cloudflare Workers Production
+        if: steps.readiness.outputs.ready == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          OUT=$(npx wrangler deploy 2>&1 | tee /dev/stderr)
+          PROD_URL=$(echo "$OUT" | grep -Eo 'https://[a-zA-Z0-9._-]+\.workers\.dev' | tail -n 1 || true)
+          echo "### 🎉 Deployed to Cloudflare Workers Production" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Production URL**: ${PROD_URL}" >> "$GITHUB_STEP_SUMMARY"
