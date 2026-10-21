@@ -1,10 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-  CAPSULE_QUEUE_STORAGE_KEY,
-  PLAYER_STATE_STORAGE_KEY,
-  useCapsuleStore,
-} from '../src/client/hooks/use-capsule-store';
+import { CAPSULE_STORE_STORAGE_KEY, useCapsuleStore } from '../src/client/hooks/use-capsule-store';
 import { useMedalStorage } from '../src/client/hooks/use-medal-storage';
 import { clearAllMedals } from '../src/client/lib/indexed-db';
 import {
@@ -118,7 +114,7 @@ describe('2. レア度抽選・コンボ補正ロジック (src/client/lib/rarit
 });
 
 describe('3. localStorage 永続化＆タスクキュー管理フック (useCapsuleStore)', () => {
-  it('カプセル補充（+10コイン）、先送り（skipCount加算＆再配置）、リサイクル（+5コイン）、開封完了が動作し、リロード（再マウント）後も localStorage から完全復元される', () => {
+  it('カプセル補充（+10コイン）、先送り（skipCount加算＆再配置）、リサイクル（+5コイン）、開封完了が動作し、リロード（再マウント）後も localStorage から完全復元される', async () => {
     const fixedDate = new Date('2026-10-20T12:00:00+09:00');
     const { result, unmount } = renderHook(() =>
       useCapsuleStore({
@@ -136,16 +132,16 @@ describe('3. localStorage 永続化＆タスクキュー管理フック (useCaps
     expect(firstId).toBe('cap_demo_001');
 
     // 1. 先送り（skipCount が +1 され、キュー末尾へ回る）
-    act(() => {
-      result.current.passActiveCapsule();
+    await act(async () => {
+      await result.current.passActiveCapsule();
     });
     expect(result.current.activeCapsule?.id).toBe('cap_demo_002');
     expect(result.current.capsules[2].id).toBe('cap_demo_001');
     expect(result.current.capsules[2].skipCount).toBe(1);
 
     // 2. カプセル2件補充（1件につき +10コイン = +20コイン）
-    act(() => {
-      result.current.supplyCapsules([
+    await act(async () => {
+      await result.current.supplyCapsules([
         {
           title: '牛乳と卵を買う',
           capsuleColor: 'blue',
@@ -164,16 +160,16 @@ describe('3. localStorage 永続化＆タスクキュー管理フック (useCaps
     expect(result.current.playerState.coins).toBe(170);
 
     // 3. リサイクル破棄（先頭カプセルを破棄し +5コイン）
-    act(() => {
-      result.current.recycleActiveCapsule();
+    await act(async () => {
+      await result.current.recycleActiveCapsule();
     });
     expect(result.current.capsules).toHaveLength(4);
     expect(result.current.playerState.coins).toBe(175);
 
     // 4. 開封完了（+30コイン、todayCombo +1、totalCracked +1、SSR抽選）
     let awardedRarity: string | undefined;
-    act(() => {
-      const outcome = result.current.crackActiveCapsule();
+    await act(async () => {
+      const outcome = await result.current.crackActiveCapsule();
       awardedRarity = outcome?.awardedRarity;
     });
     expect(awardedRarity).toBe('SSR');
@@ -200,11 +196,12 @@ describe('3. localStorage 永続化＆タスクキュー管理フック (useCaps
     expect(reloadedResult.current.playerState.totalCracked).toBe(13);
 
     // localStorage にもJSONとして保存されていること
-    expect(window.localStorage.getItem(CAPSULE_QUEUE_STORAGE_KEY)).toBeTruthy();
-    expect(window.localStorage.getItem(PLAYER_STATE_STORAGE_KEY)).toBeTruthy();
+    const persisted = JSON.parse(window.localStorage.getItem(CAPSULE_STORE_STORAGE_KEY)!);
+    expect(persisted.capsules).toHaveLength(3);
+    expect(persisted.playerState.coins).toBe(205);
   });
 
-  it('FR-16: 数日サボって別日にアプリを開いても、所持コインや累計開封数・キューは一切減らず todayCombo のみ 0 にリセットされる', () => {
+  it('FR-16: 数日サボって別日にアプリを開いても、所持コインや累計開封数・キューは一切減らず todayCombo のみ 0 にリセットされる', async () => {
     const day1 = new Date('2026-10-20T15:00:00+09:00');
     const { result, unmount } = renderHook(() =>
       useCapsuleStore({
@@ -212,8 +209,8 @@ describe('3. localStorage 永続化＆タスクキュー管理フック (useCaps
       }),
     );
 
-    act(() => {
-      result.current.supplyStampCapsule('掃除', 'blue');
+    await act(async () => {
+      await result.current.supplyStampCapsule('掃除', 'blue');
     });
     expect(result.current.playerState.coins).toBe(160);
     expect(result.current.playerState.todayCombo).toBe(3);
@@ -234,21 +231,21 @@ describe('3. localStorage 永続化＆タスクキュー管理フック (useCaps
     expect(afterSkipDays.current.playerState.todayCombo).toBe(0);
   });
 
-  it('古い状態の別タブで操作しても、localStorage の最新状態を読み直して直列更新し、他タブのタスク・コインを消失させない', () => {
+  it('古い状態の別タブで操作しても、localStorage の最新状態を読み直して直列更新し、他タブのタスク・コインを消失させない', async () => {
     const fixedDate = new Date('2026-10-20T12:00:00+09:00');
     const { result: tabA } = renderHook(() => useCapsuleStore({ now: () => fixedDate }));
     const { result: tabB } = renderHook(() => useCapsuleStore({ now: () => fixedDate }));
 
     // タブBでタスクを補充（+10コイン -> 160コイン、カプセル4件）
-    act(() => {
-      tabB.current.supplyStampCapsule('買い物', 'blue');
+    await act(async () => {
+      await tabB.current.supplyStampCapsule('買い物', 'blue');
     });
     expect(tabB.current.capsules).toHaveLength(4);
     expect(tabB.current.playerState.coins).toBe(160);
 
     // StorageEvent が発火する前（または古い状態のまま）のタブAでさらにタスクを補充
-    act(() => {
-      tabA.current.supplyStampCapsule('運動', 'red');
+    await act(async () => {
+      await tabA.current.supplyStampCapsule('運動', 'red');
     });
 
     // タブBで追加したタスクとコインが上書き消失せず、合算（カプセル5件、170コイン）されていること
@@ -258,7 +255,7 @@ describe('3. localStorage 永続化＆タスクキュー管理フック (useCaps
     expect(tabA.current.capsules.map((c) => c.title)).toContain('運動');
   });
 
-  it('window.localStorage の取得自体が SecurityError 等で例外を投げる環境でもクラッシュせず動作する', () => {
+  it('window.localStorage の取得自体が SecurityError 等で例外を投げる環境でもクラッシュせず動作する', async () => {
     const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
     Object.defineProperty(window, 'localStorage', {
       configurable: true,
@@ -272,8 +269,8 @@ describe('3. localStorage 永続化＆タスクキュー管理フック (useCaps
       expect(result.current.capsules).toHaveLength(3);
       expect(result.current.playerState.coins).toBe(150);
 
-      act(() => {
-        result.current.supplyStampCapsule('掃除', 'blue');
+      await act(async () => {
+        await result.current.supplyStampCapsule('掃除', 'blue');
       });
       expect(result.current.capsules).toHaveLength(4);
       expect(result.current.playerState.coins).toBe(160);
@@ -368,9 +365,30 @@ describe('4. IndexedDB メダル図鑑・画像データ永続化フック (useM
     const ssrDetail = await result.current.loadMedalDetail('medal_ssr_002');
     expect(ssrDetail).not.toBeNull();
     expect(ssrDetail?.medal.engravedText).toBe('DRAFT CONQUEROR');
-    expect(ssrDetail?.imageData).toBeInstanceOf(Blob);
+    expect(ssrDetail?.imageData).toBeTruthy();
+    expect(typeof ssrDetail?.imageData).not.toBe('string');
+    expect(ssrDetail?.mimeType).toBe('image/png');
 
     const nDetail = await result.current.loadMedalDetail('medal_n_001');
     expect(nDetail?.imageData).toBe(sampleBase64Image);
+
+    // 既存メダルを新しい imageBlobKey で更新した際、古い画像レコードが自動削除されること
+    const upgradedMedalN: MedalItem = {
+      ...medalN,
+      rarity: 'SR',
+      upgradeLevel: 1,
+      imageBlobKey: 'img_medal_n_001_upgraded',
+    };
+    await act(async () => {
+      await result.current.saveMedal({
+        medal: upgradedMedalN,
+        imageData: 'data:image/png;base64,UPGRADED',
+      });
+    });
+
+    const oldImg = await result.current.loadMedalImage('img_medal_n_001');
+    expect(oldImg).toBeNull();
+    const newImg = await result.current.loadMedalImage('img_medal_n_001_upgraded');
+    expect(newImg?.imageData).toBe('data:image/png;base64,UPGRADED');
   });
 });

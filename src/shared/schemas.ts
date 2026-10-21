@@ -190,7 +190,6 @@ export const CAPSULE_TASK_DRAFT_JSON_SCHEMA = {
     },
   },
   required: ['title', 'capsuleColor', 'rarityBoost', 'medalPrompt'],
-  additionalProperties: false,
 } as const;
 
 /**
@@ -208,7 +207,6 @@ export const TASK_EXTRACTION_JSON_SCHEMA = {
     },
   },
   required: ['tasks'],
-  additionalProperties: false,
 } as const;
 
 /**
@@ -226,7 +224,6 @@ export const MINI_TASK_SPLIT_JSON_SCHEMA = {
     },
   },
   required: ['task', 'encouragementMessage'],
-  additionalProperties: false,
 } as const;
 
 /**

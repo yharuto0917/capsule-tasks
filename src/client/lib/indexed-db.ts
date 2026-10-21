@@ -29,14 +29,18 @@ export interface MedalWithImageResult {
 }
 
 /**
- * IndexedDB が利用できない環境（JSDOM 単体テスト環境やプライベートブラウジング制限時など）でも
+ * IndexedDB が利用できない環境（プライベートブラウジング制限時など）でも
  * 同一の非同期APIで動作・検証できるよう、インメモリフォールバックストアを備える。
  */
 const memoryMedalStore = new Map<string, MedalItem>();
 const memoryImageStore = new Map<string, StoredMedalImageRecord>();
 
 function hasNativeIndexedDB(): boolean {
-  return typeof globalThis !== 'undefined' && typeof globalThis.indexedDB !== 'undefined';
+  try {
+    return typeof globalThis !== 'undefined' && typeof globalThis.indexedDB !== 'undefined';
+  } catch {
+    return false;
+  }
 }
 
 function openNativeDatabase(): Promise<IDBDatabase> {
@@ -62,6 +66,8 @@ function openNativeDatabase(): Promise<IDBDatabase> {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () =>
       reject(request.error ?? new Error('IndexedDB のオープンに失敗しました'));
+    request.onblocked = () =>
+      reject(new Error('IndexedDB のアップグレードが別タブの接続によってブロックされました'));
   });
 }
 
@@ -109,7 +115,8 @@ export function sortAndFilterMedals(
 }
 
 /**
- * MedalItem メタデータと生成メダル画像（Blob / Base64）を保存（新規または更新）する
+ * MedalItem メタデータと生成メダル画像（Blob / Base64）を保存（新規または更新）する。
+ * 既存メダルを更新する際に `imageBlobKey` が変更された場合は、古い画像レコードも自動削除する。
  */
 export async function saveMedalWithImage({
   medal,
@@ -122,6 +129,10 @@ export async function saveMedalWithImage({
   };
 
   if (!hasNativeIndexedDB()) {
+    const prev = memoryMedalStore.get(normalizedMedal.medalId);
+    if (prev && prev.imageBlobKey !== normalizedMedal.imageBlobKey) {
+      memoryImageStore.delete(prev.imageBlobKey);
+    }
     memoryMedalStore.set(normalizedMedal.medalId, normalizedMedal);
     if (imageData !== undefined) {
       memoryImageStore.set(normalizedMedal.imageBlobKey, {
@@ -138,20 +149,32 @@ export async function saveMedalWithImage({
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction([MEDAL_METADATA_STORE, MEDAL_IMAGE_STORE], 'readwrite');
-      tx.objectStore(MEDAL_METADATA_STORE).put(normalizedMedal);
+      const medalStore = tx.objectStore(MEDAL_METADATA_STORE);
+      const imageStore = tx.objectStore(MEDAL_IMAGE_STORE);
 
-      if (imageData !== undefined) {
-        const imageRecord: StoredMedalImageRecord = {
-          imageBlobKey: normalizedMedal.imageBlobKey,
-          imageData,
-          mimeType,
-          updatedAt: new Date().toISOString(),
-        };
-        tx.objectStore(MEDAL_IMAGE_STORE).put(imageRecord);
-      }
+      const getExistingReq = medalStore.get(normalizedMedal.medalId);
+      getExistingReq.onsuccess = () => {
+        const existing = getExistingReq.result as MedalItem | undefined;
+        if (existing && existing.imageBlobKey !== normalizedMedal.imageBlobKey) {
+          imageStore.delete(existing.imageBlobKey);
+        }
+        medalStore.put(normalizedMedal);
+
+        if (imageData !== undefined) {
+          const imageRecord: StoredMedalImageRecord = {
+            imageBlobKey: normalizedMedal.imageBlobKey,
+            imageData,
+            mimeType,
+            updatedAt: new Date().toISOString(),
+          };
+          imageStore.put(imageRecord);
+        }
+      };
 
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('メダルデータの保存に失敗しました'));
+      tx.onabort = () =>
+        reject(tx.error ?? new Error('メダルデータの保存トランザクションが中断されました'));
     });
     return normalizedMedal;
   } finally {
@@ -178,6 +201,7 @@ export async function listMedals(
       const request = tx.objectStore(MEDAL_METADATA_STORE).getAll();
       request.onsuccess = () => resolve((request.result as MedalItem[]) ?? []);
       request.onerror = () => reject(request.error ?? new Error('メダル一覧の取得に失敗しました'));
+      tx.onabort = () => reject(tx.error ?? new Error('メダル一覧の取得が中断されました'));
     });
     return sortAndFilterMedals(rawItems, sortOrder, filterRarity);
   } finally {
@@ -225,6 +249,7 @@ export async function getMedalWithImage(medalId: string): Promise<MedalWithImage
       };
       medalReq.onerror = () =>
         reject(medalReq.error ?? new Error('メダルメタデータの取得に失敗しました'));
+      tx.onabort = () => reject(tx.error ?? new Error('メダル詳細の取得が中断されました'));
     });
   } finally {
     db.close();
@@ -248,6 +273,7 @@ export async function getMedalImageByKey(
       const req = tx.objectStore(MEDAL_IMAGE_STORE).get(imageBlobKey);
       req.onsuccess = () => resolve((req.result as StoredMedalImageRecord | undefined) ?? null);
       req.onerror = () => reject(req.error ?? new Error('画像データの取得に失敗しました'));
+      tx.onabort = () => reject(tx.error ?? new Error('画像データの取得が中断されました'));
     });
   } finally {
     db.close();
@@ -285,6 +311,8 @@ export async function deleteMedalById(medalId: string): Promise<void> {
 
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('メダルデータの削除に失敗しました'));
+      tx.onabort = () =>
+        reject(tx.error ?? new Error('メダルデータの削除トランザクションが中断されました'));
     });
   } finally {
     db.close();
@@ -310,6 +338,8 @@ export async function clearAllMedals(): Promise<void> {
       tx.objectStore(MEDAL_IMAGE_STORE).clear();
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('メダルストアの初期化に失敗しました'));
+      tx.onabort = () =>
+        reject(tx.error ?? new Error('メダルストアの初期化トランザクションが中断されました'));
     });
   } finally {
     db.close();

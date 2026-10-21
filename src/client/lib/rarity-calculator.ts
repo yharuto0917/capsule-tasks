@@ -79,7 +79,8 @@ export function calculateComboMultiplier(todayCombo: number): number {
 
 /**
  * `todayCombo` と `rarityBoost` に基づいて N / R / SR / SSR の各出現確率（合計 1.0）を計算する。
- * コンボ数とカプセルの `rarityBoost` が高いほど SR / SSR / R の出現確率が上昇し、N の比率が下がる。
+ * コンボ数とカプセルの `rarityBoost` が高いほど SR / SSR の出現確率が上昇し、N の比率が下がる
+ * （上限キャップ到達後の正規化時には SR / SSR の比率を高めるため R も圧縮される）。
  */
 export function calculateRarityProbabilities({
   todayCombo,

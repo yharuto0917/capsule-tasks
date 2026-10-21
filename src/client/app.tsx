@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Award, Hammer, PlusCircle, RefreshCw, Sparkles, Timer, Trash2, Zap } from 'lucide-react';
 import { HeaderStatusBar } from './components/header-status-bar';
 import { ThreeCapsuleCanvas } from './components/three-capsule-canvas';
@@ -31,59 +31,83 @@ export const App: React.FC = () => {
     capsules,
     activeCapsule,
     playerState,
+    storageError,
+    isUpdating,
     supplyCapsules,
     passActiveCapsule,
     recycleActiveCapsule,
     crackActiveCapsule,
     toggleSound,
+    syncDateComboState,
   } = useCapsuleStore();
 
-  const [crackProgress, setCrackProgress] = useState<number>(0);
+  const [crackState, setCrackState] = useState<{ capsuleId: string | null; progress: number }>({
+    capsuleId: null,
+    progress: 0,
+  });
+  const crackProgress = crackState.capsuleId === activeCapsule?.id ? crackState.progress : 0;
   const [interactionTrigger, setInteractionTrigger] = useState<number>(0);
   const [statusFeedback, setStatusFeedback] =
     useState<string>('カプセルを連打・長押ししてパカッと開封しよう！');
 
-  const handleTapCapsule = () => {
-    if (!activeCapsule) return;
+  // 画面復帰時やフォーカス時に日付跨ぎをチェックし、ペナルティなしで todayCombo のみ同期する
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'hidden') return;
+      void syncDateComboState().catch(() => undefined);
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    return () => {
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [syncDateComboState]);
+
+  const handleTapCapsule = async () => {
+    if (!activeCapsule || isUpdating) return;
     setInteractionTrigger((prev) => prev + 1);
     const nextProgress = crackProgress + 1;
     if (nextProgress >= 3) {
-      setCrackProgress(0);
-      const result = crackActiveCapsule();
+      setCrackState({ capsuleId: activeCapsule.id, progress: 0 });
+      const result = await crackActiveCapsule(activeCapsule.id);
       if (result) {
         setStatusFeedback(
           `「${result.crackedTask.title}」を開封完了！＋${result.coinsEarned}コイン（${result.awardedRarity}メダル抽選）`,
         );
       }
     } else {
-      setCrackProgress(nextProgress);
+      setCrackState({ capsuleId: activeCapsule.id, progress: nextProgress });
       setStatusFeedback(`ヒビ割れ進行中 (${nextProgress}/3)... もう1回タップ！`);
     }
   };
 
-  const handlePassCapsule = () => {
+  const handlePassCapsule = async () => {
+    if (!activeCapsule || isUpdating) return;
     if (capsules.length <= 1) {
-      passActiveCapsule();
       setInteractionTrigger((prev) => prev + 1);
       setStatusFeedback('筐体内のカプセルはこれ1個だけです');
       return;
     }
-    setCrackProgress(0);
+    setCrackState({ capsuleId: activeCapsule.id, progress: 0 });
     setInteractionTrigger((prev) => prev + 1);
-    passActiveCapsule();
+    await passActiveCapsule(activeCapsule.id);
     setStatusFeedback('ハンドルを回して次のカプセルを排出しました！');
   };
 
-  const handleRecycleCapsule = () => {
-    if (!activeCapsule) return;
-    setCrackProgress(0);
+  const handleRecycleCapsule = async () => {
+    if (!activeCapsule || isUpdating) return;
+    setCrackState({ capsuleId: activeCapsule.id, progress: 0 });
     setInteractionTrigger((prev) => prev + 1);
-    recycleActiveCapsule();
+    const recycled = await recycleActiveCapsule(activeCapsule.id);
+    if (!recycled) return;
     setStatusFeedback('リサイクル完了！＋5コインに変換しました');
   };
 
-  const handleQuickSupply = () => {
-    supplyCapsules({
+  const handleQuickSupply = async () => {
+    if (isUpdating) return;
+    await supplyCapsules({
       title: '机の上を5分だけ片付ける',
       capsuleColor: 'blue',
       rarityBoost: 1.0,
@@ -92,6 +116,10 @@ export const App: React.FC = () => {
     });
     setInteractionTrigger((prev) => prev + 1);
     setStatusFeedback('カプセル補充ボーナス！＋10コイン獲得');
+  };
+
+  const handleToggleSound = () => {
+    void toggleSound().catch(() => undefined);
   };
 
   const activeBadge = activeCapsule
@@ -114,8 +142,16 @@ export const App: React.FC = () => {
           todayCombo={playerState.todayCombo}
           remainingCapsules={capsules.length}
           soundEnabled={playerState.soundEnabled}
-          onToggleSound={toggleSound}
+          onToggleSound={handleToggleSound}
         />
+        {storageError && (
+          <p
+            role="alert"
+            className="mx-3 shrink-0 rounded-lg bg-[#FFF0B3] px-3 py-2 text-xs font-bold text-[#78350F]"
+          >
+            {storageError}
+          </p>
+        )}
 
         {/* 2. 中央メイン画面（アクリルドーム窓＆Three.js 3Dカプセルステージ） */}
         <section
@@ -184,6 +220,7 @@ export const App: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleTapCapsule}
+                  disabled={isUpdating}
                   data-testid="active-capsule-button"
                   aria-label={`現在のカプセルタスク: ${activeCapsule.title}。タップして開封`}
                   className="group relative z-10 flex flex-col items-center justify-center focus:outline-none cursor-pointer my-auto"
@@ -250,7 +287,7 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={handlePassCapsule}
-              disabled={!activeCapsule}
+              disabled={!activeCapsule || isUpdating}
               data-testid="action-pass-button"
               className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl bg-[#7DD3FC] py-2 px-2 text-xs font-black text-[#1E1B18] disabled:opacity-45 cursor-pointer"
             >
@@ -261,7 +298,7 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={() => setStatusFeedback('放置オート開封タイマー（5/15/25分）をセット可能')}
-              disabled={!activeCapsule}
+              disabled={!activeCapsule || isUpdating}
               data-testid="action-timer-button"
               className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl bg-[#FFF8EC] py-2 px-2 text-xs font-black text-[#1E1B18] disabled:opacity-45 cursor-pointer"
             >
@@ -275,7 +312,7 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={handleRecycleCapsule}
-              disabled={!activeCapsule}
+              disabled={!activeCapsule || isUpdating}
               data-testid="action-recycle-button"
               className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl bg-[#6EE7B7] py-2 px-2 text-xs font-black text-[#1E1B18] disabled:opacity-45 cursor-pointer"
             >
@@ -292,6 +329,7 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={handleQuickSupply}
+              disabled={isUpdating}
               data-testid="open-supply-sheet-button"
               className="toy-push-btn col-span-3 flex min-h-[50px] items-center justify-center gap-1.5 rounded-2xl bg-[#FFBE0B] py-2.5 px-2.5 text-xs sm:text-sm font-black text-[#1E1B18] whitespace-nowrap cursor-pointer"
             >

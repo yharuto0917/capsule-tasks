@@ -43,7 +43,8 @@
 
 ### 2.3 ローカルファースト永続化＆非同期プリフェッチ設計
 * **ログイン・会員登録不要**：起動後0秒で操作可能とする。
-* **`localStorage`**：`CapsuleTask[]`（未完了キュー・状態）および `PlayerState`（所持コイン、累計開封数、当日コンボ数、常連スタンプ8種、サウンド設定）を保存。
+* **`localStorage`**：`CapsuleTask[]`（未完了キュー・状態）および `PlayerState`（所持コイン、累計開封数、当日コンボ数、常連スタンプ8種、サウンド設定）を、単一キー `capsule_tasks_store_v2` に一括保存する。旧v1の2キーはv2が未保存の場合のみ読み込む。破損JSON検知時は退避キー（`capsule_tasks_store_corrupt_backup`）へバックアップしたうえで自己復旧する。
+* **タブ間の更新と保存失敗**：更新APIはPromiseを返し、Web Locks利用可能時は「最新値取得・変更・保存」を排他実行し、Web Locks非対応環境（HTTP LAN実機検証や古いiOS等）では保存を止めずにロックなしで「最新値読み直し→書き込み」を実行する。ストレージ書き込み失敗・拒否時は、その画面ではメモリ上の状態を維持し、以降の保存と他タブからの同期を停止して未保存警告を画面に表示する。
 * **`IndexedDB`**：容量の大きい生成メダル画像データ（Blob / Base64）と `MedalItem` メタデータをオブジェクトストア（`medals`, `medal_images`）に分けて保存。
 * **非同期プリフェッチ（体感待ち時間ゼロ化）**：
   1. ガチャステージ中央にカプセルが排出された時点（または放置タイマー開始時点）で、バックグラウンドにて Hono API `/api/medals/generate` を先行呼び出しし、生成画像をキャッシュ（メモリ＋IndexedDB一時領域）に保持。
@@ -158,11 +159,13 @@ flowchart TD
 * **実装内容**：
   * `src/shared/schemas.ts` にフロント・バックエンド共通の `CapsuleTask`, `MedalItem`, `PlayerState` の型定義と、`gemini-3.8-flash` 用の Structured Outputs JSON Schema を定義。
   * `src/client/hooks/use-capsule-store.ts` にて、`localStorage` を用いたタスクキューの追加・先送り（`skipCount` 加算＆キュー再配置）・リサイクル破棄・完了ステータス更新、および `PlayerState`（コイン増減、連続開封コンボ `todayCombo`、サボってもペナルティなしのストリーク計算）を実装。
+  * `src/client/lib/capsule-store-storage.ts` でv1データの読み込みと単一v2スナップショット保存を扱い、Web Locksによるタブ間排他制御と保存失敗後のメモリ保持を実装。呼び出し元は更新完了を待ち、待機中の操作を制御する。
   * `src/client/lib/indexed-db.ts` および `src/client/hooks/use-medal-storage.ts` にて、`IndexedDB` 上に `MedalItem` メタデータとメダル画像（Blob / Base64）を保存・一覧取得・更新する非同期ストレージ層を実装。
 * **受け入れ条件（Acceptance Criteria）**：
   * [ ] ページをリロードしても `localStorage` のタスクキュー・所持コイン・コンボ状態が完全に復元されること。
   * [ ] `IndexedDB` にメダル画像データ（Blob/Base64）と `MedalItem` を保存し、レア度順・日付順で取得できる単体テストが通過すること。
   * [ ] 1日サボってもコインやメダルが減少せず、当日完了数に応じて `todayCombo` とレア出現率補正（`rarity-calculator.ts`）が正しく計算されること。
+  * [x] 2タブの同時補充で両方のタスク・コインを保存し、保存失敗後の操作でもメモリ上のタスクが消えないこと（回帰テスト・実ブラウザで検証）。
 * **想定変更ファイル**：`src/shared/schemas.ts`, `src/client/lib/indexed-db.ts`, `src/client/lib/rarity-calculator.ts`, `src/client/hooks/use-capsule-store.ts`, `src/client/hooks/use-medal-storage.ts`, `tests/storage-and-rarity.test.ts`
 * **規模**：M（5〜6ファイル）
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MedalItem, MedalRarity } from '../../shared/schemas';
 import {
   clearAllMedals,
@@ -61,39 +61,52 @@ export function useMedalStorage(options: UseMedalStorageOptions = {}): UseMedalS
   const [isLoading, setIsLoading] = useState<boolean>(autoLoad);
   const [error, setError] = useState<string | null>(null);
 
+  // 初回 autoLoad と saveMedal / removeMedal / clearMedals の完了順が前後しても、
+  // 古い読み込み結果で最新の一覧を上書きしないためのリクエスト世代番号
+  const requestIdRef = useRef<number>(0);
+
   const refreshMedals = useCallback(async (): Promise<MedalItem[]> => {
+    const reqId = ++requestIdRef.current;
     setIsLoading(true);
     setError(null);
     try {
       const items = await listMedals('date-desc', 'ALL');
-      setAllMedals(items);
+      if (reqId === requestIdRef.current) {
+        setAllMedals(items);
+      }
       return sortAndFilterMedals(items, sortOrder, rarityFilter);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'メダル図鑑の読み込みに失敗しました';
-      setError(message);
+      if (reqId === requestIdRef.current) {
+        setError(message);
+      }
       return [];
     } finally {
-      setIsLoading(false);
+      if (reqId === requestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [rarityFilter, sortOrder]);
 
   useEffect(() => {
     if (!autoLoad) return;
     let cancelled = false;
+    const reqId = ++requestIdRef.current;
+
     listMedals('date-desc', 'ALL')
       .then((items) => {
-        if (!cancelled) {
+        if (!cancelled && reqId === requestIdRef.current) {
           setAllMedals(items);
           setError(null);
         }
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
+        if (!cancelled && reqId === requestIdRef.current) {
           setError(err instanceof Error ? err.message : 'メダル図鑑の読み込みに失敗しました');
         }
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled && reqId === requestIdRef.current) {
           setIsLoading(false);
         }
       });
@@ -104,10 +117,14 @@ export function useMedalStorage(options: UseMedalStorageOptions = {}): UseMedalS
   }, [autoLoad]);
 
   const saveMedal = useCallback(async (input: SaveMedalWithImageInput): Promise<MedalItem> => {
+    const reqId = ++requestIdRef.current;
     setError(null);
     const saved = await saveMedalWithImage(input);
     const updatedList = await listMedals('date-desc', 'ALL');
-    setAllMedals(updatedList);
+    if (reqId === requestIdRef.current) {
+      setAllMedals(updatedList);
+      setIsLoading(false);
+    }
     return saved;
   }, []);
 
@@ -126,14 +143,22 @@ export function useMedalStorage(options: UseMedalStorageOptions = {}): UseMedalS
   );
 
   const removeMedal = useCallback(async (medalId: string): Promise<void> => {
+    const reqId = ++requestIdRef.current;
     await deleteMedalById(medalId);
     const updatedList = await listMedals('date-desc', 'ALL');
-    setAllMedals(updatedList);
+    if (reqId === requestIdRef.current) {
+      setAllMedals(updatedList);
+      setIsLoading(false);
+    }
   }, []);
 
   const clearMedals = useCallback(async (): Promise<void> => {
+    const reqId = ++requestIdRef.current;
     await clearAllMedals();
-    setAllMedals([]);
+    if (reqId === requestIdRef.current) {
+      setAllMedals([]);
+      setIsLoading(false);
+    }
   }, []);
 
   const medals = useMemo(
