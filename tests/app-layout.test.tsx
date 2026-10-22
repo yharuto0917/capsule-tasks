@@ -1,8 +1,12 @@
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../src/client/app';
 import { HeaderStatusBar } from '../src/client/components/header-status-bar';
 import serverApp from '../src/server/index';
+
+beforeEach(() => {
+  window.localStorage.clear();
+});
 
 describe('HeaderStatusBar', () => {
   it('所持コイン、連続コンボ数、筐体内の残りカプセル数を正しく表示する', () => {
@@ -31,14 +35,19 @@ describe('App (1画面完結ガチャステージ骨格)', () => {
     expect(screen.getByTestId('thumb-action-dock')).toBeInTheDocument();
   });
 
-  it('パスボタン押下で次のカプセルに切り替わり、補充ボタン押下で+10コインが付与される', () => {
+  it('パスボタン押下で次のカプセルに切り替わり、補充ボタン押下で+10コインが付与される', async () => {
     render(<App />);
 
     expect(screen.getByTestId('status-coins')).toHaveTextContent('150');
 
     // パスして次のカプセルへ
     fireEvent.click(screen.getByTestId('action-pass-button'));
-    expect(screen.getByTestId('active-capsule-title')).toHaveTextContent('溜まった洗濯物をたたむ');
+    await waitFor(() =>
+      expect(screen.getByTestId('active-capsule-title')).toHaveTextContent(
+        '溜まった洗濯物をたたむ',
+      ),
+    );
+    await waitFor(() => expect(screen.getByTestId('open-supply-sheet-button')).toBeEnabled());
     expect(screen.getByTestId('three-capsule-canvas')).toHaveAttribute(
       'data-capsule-color',
       'blue',
@@ -46,7 +55,31 @@ describe('App (1画面完結ガチャステージ骨格)', () => {
 
     // カプセル補充で+10コイン
     fireEvent.click(screen.getByTestId('open-supply-sheet-button'));
-    expect(screen.getByTestId('status-coins')).toHaveTextContent('160');
+    await waitFor(() => expect(screen.getByTestId('status-coins')).toHaveTextContent('160'));
+  });
+
+  it('筐体内のカプセルが残り1個のときにパスボタンを押しても skipCount が増加しない', async () => {
+    render(<App />);
+
+    // 2個破棄して残り1個にする
+    fireEvent.click(screen.getByTestId('action-recycle-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('status-remaining-capsules')).toHaveTextContent('2'),
+    );
+    fireEvent.click(screen.getByTestId('action-recycle-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('status-remaining-capsules')).toHaveTextContent('1'),
+    );
+
+    // 残り1個の状態でパスボタンを押す
+    fireEvent.click(screen.getByTestId('action-pass-button'));
+    expect(screen.getByTestId('stage-feedback-banner')).toHaveTextContent(
+      '筐体内のカプセルはこれ1個だけです',
+    );
+
+    const stored = JSON.parse(window.localStorage.getItem('capsule_tasks_store_v2')!);
+    expect(stored.capsules).toHaveLength(1);
+    expect(stored.capsules[0].skipCount).toBe(0);
   });
 });
 
