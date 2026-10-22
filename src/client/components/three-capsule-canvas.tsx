@@ -72,6 +72,7 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     spinBoost: 0,
     squash: 0,
   });
+  const initialColorRef = useRef<CapsuleColorVariant>(capsuleColor);
   const crackProgressRef = useRef<number>(crackProgress);
 
   useEffect(() => {
@@ -165,7 +166,7 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     topDomeGroupRef.current = topDomeGroup;
     rootGroup.add(topDomeGroup);
 
-    const initialPalette = CAPSULE_PALETTE[capsuleColor];
+    const initialPalette = CAPSULE_PALETTE[initialColorRef.current];
     const topMaterial = new THREE.MeshPhysicalMaterial({
       color: initialPalette.color,
       emissive: initialPalette.emissive,
@@ -428,7 +429,7 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
       materialsToDispose.forEach((mat) => mat.dispose());
       renderer.dispose();
     };
-  }, [capsuleColor]);
+  }, []);
 
   return (
     <div

@@ -1,31 +1,10 @@
-import React, { useEffect, useState } from 'react';
-import { Award, Hammer, PlusCircle, RefreshCw, Sparkles, Timer, Trash2, Zap } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Award, PlusCircle, RefreshCw, Timer, Trash2 } from 'lucide-react';
+import { CapsuleMachineVisual } from './components/capsule-machine-visual';
+import { CapsuleStage, type StageToastNotification } from './components/capsule-stage';
 import { HeaderStatusBar } from './components/header-status-bar';
-import { ThreeCapsuleCanvas } from './components/three-capsule-canvas';
 import { useCapsuleStore } from './hooks/use-capsule-store';
 import { useSoundEffect } from './hooks/use-sound-effect';
-import type { CapsuleColor } from '../shared/schemas';
-
-const CAPSULE_BADGE_CONFIG: Record<
-  CapsuleColor,
-  {
-    label: string;
-    bgClass: string;
-  }
-> = {
-  blue: {
-    label: 'LIGHT CAPSULE ×1.0',
-    bgClass: 'bg-[#38BDF8] text-[#1E1B18]',
-  },
-  red: {
-    label: 'MEDIUM CAPSULE ×1.5',
-    bgClass: 'bg-[#FF4D4D] text-white',
-  },
-  gold: {
-    label: 'GOLD CAPSULE ×2.0',
-    bgClass: 'bg-[#FFBE0B] text-[#1E1B18]',
-  },
-};
 
 export const App: React.FC = () => {
   const {
@@ -46,14 +25,30 @@ export const App: React.FC = () => {
     playerState.soundEnabled,
   );
 
-  const [crackState, setCrackState] = useState<{ capsuleId: string | null; progress: number }>({
-    capsuleId: null,
-    progress: 0,
-  });
-  const crackProgress = crackState.capsuleId === activeCapsule?.id ? crackState.progress : 0;
   const [interactionTrigger, setInteractionTrigger] = useState<number>(0);
   const [statusFeedback, setStatusFeedback] =
     useState<string>('カプセルを連打・長押ししてパカッと開封しよう！');
+  const [toastNotification, setToastNotification] = useState<StageToastNotification | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (notification: StageToastNotification) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    setToastNotification(notification);
+    toastTimerRef.current = setTimeout(() => {
+      setToastNotification(null);
+      toastTimerRef.current = null;
+    }, 2600);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   // 画面復帰時やフォーカス時に日付跨ぎをチェックし、ペナルティなしで todayCombo のみ同期する
   useEffect(() => {
@@ -70,24 +65,25 @@ export const App: React.FC = () => {
     };
   }, [syncDateComboState]);
 
-  const handleTapCapsule = async () => {
+  const handleCrackStep = (step: number) => {
+    unlockAudio();
+    playCrack(step);
+    setStatusFeedback(`ヒビ割れ進行中 (${step}/3)... もう1回タップ！`);
+  };
+
+  const handleCrackComplete = async () => {
     if (!activeCapsule || isUpdating) return;
     unlockAudio();
-    setInteractionTrigger((prev) => prev + 1);
-    const nextProgress = crackProgress + 1;
-    if (nextProgress >= 3) {
-      setCrackState({ capsuleId: activeCapsule.id, progress: 0 });
-      const result = await crackActiveCapsule(activeCapsule.id);
-      if (result) {
-        playFanfare(result.awardedRarity);
-        setStatusFeedback(
-          `「${result.crackedTask.title}」を開封完了！＋${result.coinsEarned}コイン（${result.awardedRarity}メダル抽選）`,
-        );
-      }
-    } else {
-      playCrack(nextProgress);
-      setCrackState({ capsuleId: activeCapsule.id, progress: nextProgress });
-      setStatusFeedback(`ヒビ割れ進行中 (${nextProgress}/3)... もう1回タップ！`);
+    const result = await crackActiveCapsule(activeCapsule.id);
+    if (result) {
+      playFanfare(result.awardedRarity);
+      showToast({
+        type: 'crack',
+        text: `開封完了！＋${result.coinsEarned}コイン獲得`,
+      });
+      setStatusFeedback(
+        `「${result.crackedTask.title}」を開封完了！＋${result.coinsEarned}コイン（${result.awardedRarity}メダル抽選）`,
+      );
     }
   };
 
@@ -99,23 +95,29 @@ export const App: React.FC = () => {
       return;
     }
     unlockAudio();
-    setCrackState({ capsuleId: activeCapsule.id, progress: 0 });
     setInteractionTrigger((prev) => prev + 1);
     const passed = await passActiveCapsule(activeCapsule.id);
     if (!passed) return;
     playPass();
+    showToast({
+      type: 'pass',
+      text: 'ガチャを回し直して次のカプセルを排出！',
+    });
     setStatusFeedback('ハンドルを回して次のカプセルを排出しました！');
   };
 
   const handleRecycleCapsule = async () => {
     if (!activeCapsule || isUpdating) return;
     unlockAudio();
-    setCrackState({ capsuleId: activeCapsule.id, progress: 0 });
     setInteractionTrigger((prev) => prev + 1);
     const recycled = await recycleActiveCapsule(activeCapsule.id);
     if (!recycled) return;
     playRecycle();
-    setStatusFeedback('リサイクル完了！＋5コインに変換しました');
+    showToast({
+      type: 'recycle',
+      text: 'リサイクル完了！＋5コイン獲得',
+    });
+    setStatusFeedback('リサイクル完了！＋5コイン獲得');
   };
 
   const handleQuickSupply = async () => {
@@ -137,10 +139,6 @@ export const App: React.FC = () => {
   const handleToggleSound = () => {
     void toggleSound().catch(() => undefined);
   };
-
-  const activeBadge = activeCapsule
-    ? CAPSULE_BADGE_CONFIG[activeCapsule.capsuleColor]
-    : CAPSULE_BADGE_CONFIG.blue;
 
   return (
     <div
@@ -169,117 +167,27 @@ export const App: React.FC = () => {
           </p>
         )}
 
-        {/* 2. 中央メイン画面（アクリルドーム窓＆Three.js 3Dカプセルステージ） */}
+        {/* 2. 中央メイン画面（筐体内カプセル残数ビジュアル ＆ 1画面1カプセル操作ステージ） */}
         <section
           aria-label="ガチャステージ"
           data-testid="gacha-stage-section"
           className="relative flex flex-1 flex-col items-center justify-between px-3.5 py-1 min-h-0"
         >
-          {/* ガチャ筐体ホッパー残数プレート（未完了リストは見せない） */}
-          <div
-            data-testid="machine-dome-indicator"
-            className="flex items-center gap-2 rounded-full bg-[#1E1B18] border-2 border-[#FFF8EC] px-3.5 py-1 text-xs font-bold text-[#FFF8EC] shadow-[0_3px_0_rgba(0,0,0,0.28)]"
-          >
-            <Sparkles className="h-3.5 w-3.5 text-[#FFBE0B] shrink-0" aria-hidden="true" />
-            <span className="truncate">
-              {capsules.length > 0
-                ? `ガチャドーム内に ${capsules.length} 個のカプセルがスタンバイ中`
-                : 'ドームは空っぽ！下の「＋カプセル補充」から投入しよう'}
-            </span>
-          </div>
+          {/* ガチャ筐体内の残りカプセル視覚表現（未完了リストは一切表示しない：FR-06） */}
+          <CapsuleMachineVisual capsules={capsules} />
 
-          {/* 透明アクリルドームショーケース（Three.js 3Dカプセル + タスクスリップ） */}
-          <div className="toy-acrylic-dome relative flex flex-1 flex-col items-center justify-between w-full my-1.5 rounded-[32px] p-3 min-h-0 overflow-hidden">
-            {/* アクリルドームの左上ハイライト反射 */}
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute -top-6 -left-6 h-28 w-44 -rotate-12 rounded-full bg-white/55 blur-[2px]"
-            />
-
-            {/* 筐体コーナーのビス装飾 */}
-            <span aria-hidden="true" className="toy-screw absolute top-3 left-3" />
-            <span aria-hidden="true" className="toy-screw absolute top-3 right-3" />
-
-            {activeCapsule ? (
-              <>
-                {/* 上部：カプセルレア度タグ＆3段階クラックゲージ */}
-                <div className="relative z-10 flex w-full items-center justify-between px-4 pt-0.5">
-                  <span
-                    className={`inline-flex items-center gap-1 rounded-full border-2 border-[#1E1B18] px-2.5 py-0.5 font-display text-[11px] font-bold tracking-wide shadow-[0_2px_0_#1E1B18] ${activeBadge.bgClass}`}
-                  >
-                    <Zap className="h-3 w-3 fill-current" aria-hidden="true" />
-                    {activeBadge.label}
-                  </span>
-
-                  {/* 3段階クラックランプ */}
-                  <div
-                    aria-label={`ヒビ割れ段階 ${crackProgress}/3`}
-                    className="flex items-center gap-1 rounded-full bg-[#1E1B18] px-2.5 py-1 border-2 border-white/80"
-                  >
-                    {[1, 2, 3].map((step) => (
-                      <span
-                        key={step}
-                        className={`h-2.5 w-2.5 rounded-full border border-[#1E1B18] transition-colors ${
-                          crackProgress >= step
-                            ? 'bg-[#FFBE0B] shadow-[0_0_6px_#FFBE0B]'
-                            : 'bg-[#44403C]'
-                        }`}
-                      />
-                    ))}
-                    <span className="ml-1 font-display text-[10px] font-bold text-[#FFF8EC]">
-                      {crackProgress}/3
-                    </span>
-                  </div>
-                </div>
-
-                {/* 中央：Three.js 3Dカプセル本体ボタン */}
-                <button
-                  type="button"
-                  onClick={handleTapCapsule}
-                  disabled={isUpdating}
-                  data-testid="active-capsule-button"
-                  aria-label={`現在のカプセルタスク: ${activeCapsule.title}。タップして開封`}
-                  className="group relative z-10 flex flex-col items-center justify-center focus:outline-none cursor-pointer my-auto"
-                >
-                  <ThreeCapsuleCanvas
-                    capsuleColor={activeCapsule.capsuleColor}
-                    crackProgress={crackProgress}
-                    interactionTrigger={interactionTrigger}
-                  />
-                </button>
-
-                {/* 下部：カプセル同梱ミニブック風タスク名スリップ */}
-                <div className="relative z-10 w-full rounded-2xl bg-[#FFFDF9] border-3 border-[#1E1B18] px-3.5 py-2 shadow-[0_4px_0_#1E1B18]">
-                  <p
-                    data-testid="active-capsule-title"
-                    className="font-toy text-center text-sm sm:text-base font-normal leading-snug text-[#1E1B18] line-clamp-2"
-                  >
-                    {activeCapsule.title}
-                  </p>
-                  <div className="mt-1 flex items-center justify-center gap-1.5 text-[11px] font-black text-[#B45309]">
-                    <Hammer className="h-3.5 w-3.5 stroke-[2.5]" aria-hidden="true" />
-                    <span>
-                      {crackProgress === 0
-                        ? '3Dカプセルをタップ連打 / 長押しで割る！'
-                        : `ヒビ割れ ${crackProgress}/3（あと ${3 - crackProgress} 回タップ）`}
-                    </span>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div
-                data-testid="empty-capsule-stage"
-                className="relative z-10 my-auto flex flex-col items-center justify-center rounded-2xl bg-[#FFFDF9] border-3 border-[#1E1B18] px-5 py-7 text-center shadow-[0_5px_0_#1E1B18]"
-              >
-                <p className="font-toy text-base text-[#1E1B18]">
-                  すべてのカプセルを開封しました！
-                </p>
-                <p className="mt-1.5 text-xs font-bold text-[#57534E]">
-                  下の「＋カプセル補充」から音声やスタンプで新しいカプセルを投入しよう
-                </p>
-              </div>
-            )}
-          </div>
+          {/* 1カプセル表示＆クラック・スワイプ操作ステージ（FR-06, FR-07, FR-09, FR-10） */}
+          <CapsuleStage
+            activeCapsule={activeCapsule}
+            remainingCount={capsules.length}
+            isUpdating={isUpdating}
+            onCrack={handleCrackComplete}
+            onCrackStep={handleCrackStep}
+            onPass={handlePassCapsule}
+            onRecycle={handleRecycleCapsule}
+            externalInteractionTrigger={interactionTrigger}
+            toastNotification={toastNotification}
+          />
 
           {/* 筐体ステータスインジケーターバー */}
           <div
