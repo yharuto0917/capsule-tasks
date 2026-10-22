@@ -25,6 +25,7 @@ import {
   readStoreSnapshot,
   writeStoreSnapshot,
   type CapsuleStoreSnapshot,
+  type CorruptStoreEntry,
 } from '../lib/capsule-store-storage';
 
 export {
@@ -130,7 +131,7 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
     const todayKey = formatLocalDateKey(initialNowFn());
     const fallback = createDefaultStoreSnapshot(todayKey);
     try {
-      return readStoreSnapshot(getSafeLocalStorage(), todayKey, fallback);
+      return readStoreSnapshot(getSafeLocalStorage(), todayKey, fallback).snapshot;
     } catch {
       return fallback;
     }
@@ -158,10 +159,13 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
       const operation = transactionQueueRef.current.then(async () => {
         const applyUpdate = (storage: Storage | null): T => {
           const todayKey = formatLocalDateKey(getNowRef.current());
-          let latest = readStoreSnapshot(null, todayKey, snapshotRef.current);
+          let latest = readStoreSnapshot(null, todayKey, snapshotRef.current).snapshot;
+          let corruptEntries: CorruptStoreEntry[] = [];
           if (!memoryOnlyRef.current && storage) {
             try {
-              latest = readStoreSnapshot(storage, todayKey, latest);
+              const stored = readStoreSnapshot(storage, todayKey, latest);
+              latest = stored.snapshot;
+              corruptEntries = stored.corruptEntries;
             } catch {
               enterMemoryOnly();
             }
@@ -172,9 +176,13 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
             capsules: update.nextCapsules ?? latest.capsules,
             playerState: update.nextPlayerState ?? latest.playerState,
           };
-          if (storage && !memoryOnlyRef.current) {
+          const hasStateMutation =
+            update.nextCapsules !== undefined ||
+            update.nextPlayerState !== undefined ||
+            corruptEntries.length > 0;
+          if (hasStateMutation && storage && !memoryOnlyRef.current) {
             try {
-              writeStoreSnapshot(storage, next);
+              writeStoreSnapshot(storage, next, corruptEntries);
             } catch {
               // 未保存状態は古い保存値で置き換えず、この画面で保持する。
               enterMemoryOnly();
@@ -199,10 +207,10 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
           // ストレージと同様、ロック機能の取得拒否にも対応する。
         }
 
-        // HTTP LAN 実機検証時や Web Locks 非対応ブラウザでは保存を止めず、
-        // ロックなしで「最新値読み直し → 書き込み」を実行する。
+        // 排他制御できない環境では、共有データを上書きせずこの画面で変更を保持する。
         if (!locks || typeof locks.request !== 'function') {
-          return applyUpdate(storage);
+          enterMemoryOnly();
+          return applyUpdate(null);
         }
 
         let lockAcquired = false;
@@ -213,8 +221,8 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
           });
         } catch (error) {
           if (lockAcquired) throw error;
-          // セキュアコンテキスト制限等で locks.request 自体が拒否された場合も storage への保存は継続する
-          return applyUpdate(storage);
+          enterMemoryOnly();
+          return applyUpdate(null);
         }
       });
       // ロック非対応・保存失敗時も、同じ画面内の操作順は維持する。
@@ -241,7 +249,7 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
         return;
       const todayKey = formatLocalDateKey(getNowRef.current());
       try {
-        const synced = readStoreSnapshot(storage, todayKey, snapshotRef.current);
+        const synced = readStoreSnapshot(storage, todayKey, snapshotRef.current).snapshot;
         snapshotRef.current = synced;
         setSnapshot(synced);
       } catch {
@@ -252,14 +260,16 @@ export function useCapsuleStore(options: UseCapsuleStoreOptions = {}): UseCapsul
     return () => window.removeEventListener('storage', handleStorage);
   }, [enterMemoryOnly]);
 
-  const syncDateComboState = useCallback(
-    () =>
-      commitStoreTransaction((_capsules, playerState) => ({
-        nextPlayerState: playerState,
-        result: undefined,
-      })),
-    [commitStoreTransaction],
-  );
+  const syncDateComboState = useCallback(async (): Promise<void> => {
+    const todayKey = formatLocalDateKey(getNowRef.current());
+    if (snapshotRef.current.playerState.lastActiveDate === todayKey) {
+      return;
+    }
+    await commitStoreTransaction((_capsules, playerState) => ({
+      nextPlayerState: playerState,
+      result: undefined,
+    }));
+  }, [commitStoreTransaction]);
 
   const supplyCapsules = useCallback(
     async (

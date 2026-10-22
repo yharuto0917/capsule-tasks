@@ -118,14 +118,26 @@ export function useMedalStorage(options: UseMedalStorageOptions = {}): UseMedalS
 
   const saveMedal = useCallback(async (input: SaveMedalWithImageInput): Promise<MedalItem> => {
     const reqId = ++requestIdRef.current;
+    setIsLoading(true);
     setError(null);
-    const saved = await saveMedalWithImage(input);
-    const updatedList = await listMedals('date-desc', 'ALL');
-    if (reqId === requestIdRef.current) {
-      setAllMedals(updatedList);
-      setIsLoading(false);
+    try {
+      const saved = await saveMedalWithImage(input);
+      const updatedList = await listMedals('date-desc', 'ALL');
+      if (reqId === requestIdRef.current) {
+        setAllMedals(updatedList);
+      }
+      return saved;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'メダルの保存に失敗しました';
+      if (reqId === requestIdRef.current) {
+        setError(message);
+      }
+      throw err;
+    } finally {
+      if (reqId === requestIdRef.current) {
+        setIsLoading(false);
+      }
     }
-    return saved;
   }, []);
 
   const loadMedalDetail = useCallback(
@@ -144,20 +156,46 @@ export function useMedalStorage(options: UseMedalStorageOptions = {}): UseMedalS
 
   const removeMedal = useCallback(async (medalId: string): Promise<void> => {
     const reqId = ++requestIdRef.current;
-    await deleteMedalById(medalId);
-    const updatedList = await listMedals('date-desc', 'ALL');
-    if (reqId === requestIdRef.current) {
-      setAllMedals(updatedList);
-      setIsLoading(false);
+    setIsLoading(true);
+    setError(null);
+    try {
+      await deleteMedalById(medalId);
+      const updatedList = await listMedals('date-desc', 'ALL');
+      if (reqId === requestIdRef.current) {
+        setAllMedals(updatedList);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'メダルの削除に失敗しました';
+      if (reqId === requestIdRef.current) {
+        setError(message);
+      }
+      throw err;
+    } finally {
+      if (reqId === requestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
   const clearMedals = useCallback(async (): Promise<void> => {
     const reqId = ++requestIdRef.current;
-    await clearAllMedals();
-    if (reqId === requestIdRef.current) {
-      setAllMedals([]);
-      setIsLoading(false);
+    setIsLoading(true);
+    setError(null);
+    try {
+      await clearAllMedals();
+      if (reqId === requestIdRef.current) {
+        setAllMedals([]);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'メダル図鑑の初期化に失敗しました';
+      if (reqId === requestIdRef.current) {
+        setError(message);
+      }
+      throw err;
+    } finally {
+      if (reqId === requestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   }, []);
 

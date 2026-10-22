@@ -390,5 +390,278 @@ describe('4. IndexedDB メダル図鑑・画像データ永続化フック (useM
     expect(oldImg).toBeNull();
     const newImg = await result.current.loadMedalImage('img_medal_n_001_upgraded');
     expect(newImg?.imageData).toBe('data:image/png;base64,UPGRADED');
+
+    // imageData 未指定で imageBlobKey だけ変更した場合も、既存画像が新キーへ引き継がれて消失しないこと
+    const keyRenamedMedalN: MedalItem = {
+      ...upgradedMedalN,
+      imageBlobKey: 'img_medal_n_001_renamed',
+    };
+    await act(async () => {
+      await result.current.saveMedal({ medal: keyRenamedMedalN });
+    });
+
+    const prevKeyImg = await result.current.loadMedalImage('img_medal_n_001_upgraded');
+    expect(prevKeyImg).toBeNull();
+    const renamedImg = await result.current.loadMedalImage('img_medal_n_001_renamed');
+    expect(renamedImg?.imageData).toBe('data:image/png;base64,UPGRADED');
+  });
+
+  it('indexedDB.open が SecurityError で失敗する環境でもインメモリフォールバックで保存・取得できる', async () => {
+    const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+    globalThis.indexedDB.open = (() => {
+      throw new DOMException('IndexedDB is disabled in private mode', 'SecurityError');
+    }) as typeof globalThis.indexedDB.open;
+
+    try {
+      const { result } = renderHook(() => useMedalStorage({ autoLoad: true }));
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      const fallbackMedal: MedalItem = {
+        medalId: 'medal_mem_001',
+        taskId: 'cap_mem_001',
+        taskTitle: 'プライベートモードのタスク',
+        medalName: 'メモリフォールバック勲章',
+        engravedText: 'MEMORY GUARD',
+        rarity: 'R',
+        imageBlobKey: 'img_medal_mem_001',
+        modelUsed: 'gemini-nano-banana-2.1',
+        unlockedAt: '2026-10-20T12:00:00+09:00',
+        upgradeLevel: 0,
+      };
+
+      await act(async () => {
+        await result.current.saveMedal({
+          medal: fallbackMedal,
+          imageData: 'data:image/png;base64,MEM_FALLBACK',
+        });
+      });
+
+      expect(result.current.error).toBeNull();
+      expect(result.current.medals).toHaveLength(1);
+      const detail = await result.current.loadMedalDetail('medal_mem_001');
+      expect(detail?.imageData).toBe('data:image/png;base64,MEM_FALLBACK');
+    } finally {
+      globalThis.indexedDB.open = originalOpen;
+    }
+  });
+
+  it('一時的な indexedDB.open 失敗時にメモリへ保存されたメダルと画像が、次の open 成功時に IndexedDB へ自動移行されて取得できる', async () => {
+    const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+    const { result } = renderHook(() => useMedalStorage({ autoLoad: true }));
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    // 1件目は正常な IndexedDB に保存
+    const firstMedal: MedalItem = {
+      medalId: 'medal_idb_001',
+      taskId: 'cap_idb_001',
+      taskTitle: '通常のタスク',
+      medalName: '通常保存勲章',
+      engravedText: 'NORMAL SAVE',
+      rarity: 'N',
+      imageBlobKey: 'img_medal_idb_001',
+      modelUsed: 'gemini-nano-banana-2.1',
+      unlockedAt: '2026-10-20T10:00:00+09:00',
+      upgradeLevel: 0,
+    };
+    await act(async () => {
+      await result.current.saveMedal({
+        medal: firstMedal,
+        imageData: 'data:image/png;base64,FIRST_IDB',
+      });
+    });
+
+    // 2件目の保存時のみ indexedDB.open が一時的に失敗する状況を再現
+    let failCount = 0;
+    globalThis.indexedDB.open = ((...args: Parameters<typeof globalThis.indexedDB.open>) => {
+      if (failCount < 1) {
+        failCount += 1;
+        throw new DOMException('Temporary blocked error', 'InvalidStateError');
+      }
+      return originalOpen(...args);
+    }) as typeof globalThis.indexedDB.open;
+
+    try {
+      const transientMedal: MedalItem = {
+        medalId: 'medal_transient_002',
+        taskId: 'cap_transient_002',
+        taskTitle: '一時エラー中のタスク',
+        medalName: '一時メモリ退避勲章',
+        engravedText: 'TRANSIENT RECOVERY',
+        rarity: 'SSR',
+        imageBlobKey: 'img_medal_transient_002',
+        modelUsed: 'gemini-nano-banana-2.1',
+        unlockedAt: '2026-10-20T11:00:00+09:00',
+        upgradeLevel: 0,
+      };
+
+      await act(async () => {
+        await result.current.saveMedal({
+          medal: transientMedal,
+          imageData: 'data:image/png;base64,TRANSIENT_IMG',
+        });
+      });
+
+      // open 回復後、1件目（IndexedDB）と2件目（メモリから自動移行）の両方が取得できること
+      expect(result.current.medals.map((m) => m.medalId)).toEqual([
+        'medal_transient_002',
+        'medal_idb_001',
+      ]);
+      const migratedDetail = await result.current.loadMedalDetail('medal_transient_002');
+      expect(migratedDetail?.medal.medalName).toBe('一時メモリ退避勲章');
+      expect(migratedDetail?.imageData).toBe('data:image/png;base64,TRANSIENT_IMG');
+    } finally {
+      globalThis.indexedDB.open = originalOpen;
+    }
+  });
+
+  it('DB利用不能中にメダルを削除し、同じIDで画像なし保存した場合、DB復旧後に古い画像が復活しない', async () => {
+    const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+    const { result } = renderHook(() => useMedalStorage({ autoLoad: true }));
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    const initialMedal: MedalItem = {
+      medalId: 'medal_reused_001',
+      taskId: 'cap_reused_001',
+      taskTitle: '最初のタスク',
+      medalName: '初期画像付き勲章',
+      engravedText: 'INITIAL IMAGE',
+      rarity: 'R',
+      imageBlobKey: 'img_medal_reused_001',
+      modelUsed: 'gemini-nano-banana-2.1',
+      unlockedAt: '2026-10-20T10:00:00+09:00',
+      upgradeLevel: 0,
+    };
+
+    // 1. 正常な IndexedDB に画像付きで保存
+    await act(async () => {
+      await result.current.saveMedal({
+        medal: initialMedal,
+        imageData: 'data:image/png;base64,OLD_RESURRECT_IMAGE',
+      });
+    });
+
+    // 2. IndexedDB が一時利用不能になった状態で、削除 → 同じIDで画像なし保存を実行
+    let dbUnavailable = true;
+    globalThis.indexedDB.open = ((...args: Parameters<typeof globalThis.indexedDB.open>) => {
+      if (dbUnavailable) {
+        throw new DOMException('Temporary unavailable', 'InvalidStateError');
+      }
+      return originalOpen(...args);
+    }) as typeof globalThis.indexedDB.open;
+
+    try {
+      await act(async () => {
+        await result.current.removeMedal('medal_reused_001');
+        await result.current.saveMedal({
+          medal: {
+            ...initialMedal,
+            medalName: '画像なし再作成勲章',
+          },
+        });
+      });
+
+      // 3. IndexedDB 復旧後に詳細と画像を取得し、削除したはずの古い画像が復活していないことを検証
+      dbUnavailable = false;
+      await act(async () => {
+        await result.current.refreshMedals();
+      });
+
+      expect(result.current.medals).toHaveLength(1);
+      expect(result.current.medals[0].medalName).toBe('画像なし再作成勲章');
+
+      const detail = await result.current.loadMedalDetail('medal_reused_001');
+      expect(detail?.medal.medalName).toBe('画像なし再作成勲章');
+      expect(detail?.imageData).toBeNull();
+      expect(await result.current.loadMedalImage('img_medal_reused_001')).toBeNull();
+    } finally {
+      globalThis.indexedDB.open = originalOpen;
+    }
+  });
+
+  it('復旧移行トランザクションの途中で再度 clearMedals が呼ばれた場合、新しい世代の全件削除が取り消されずメダルが復活しない', async () => {
+    const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+    const { result } = renderHook(() => useMedalStorage({ autoLoad: true }));
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    const medalA: MedalItem = {
+      medalId: 'medal_clear_race_001',
+      taskId: 'cap_clear_race_001',
+      taskTitle: 'クリア競合テスト',
+      medalName: '消えるべき勲章',
+      engravedText: 'MUST NOT RESURRECT',
+      rarity: 'SR',
+      imageBlobKey: 'img_medal_clear_race_001',
+      modelUsed: 'gemini-nano-banana-2.1',
+      unlockedAt: '2026-10-20T10:00:00+09:00',
+      upgradeLevel: 0,
+    };
+
+    // 1. DB利用不能中に全件削除（世代1）とメダル保存を行う
+    let dbUnavailable = true;
+    globalThis.indexedDB.open = ((...args: Parameters<typeof globalThis.indexedDB.open>) => {
+      if (dbUnavailable) {
+        throw new DOMException('Temporary unavailable', 'InvalidStateError');
+      }
+      return originalOpen(...args);
+    }) as typeof globalThis.indexedDB.open;
+
+    try {
+      await act(async () => {
+        await result.current.clearMedals();
+        await result.current.saveMedal({
+          medal: medalA,
+          imageData: 'data:image/png;base64,RACE_IMG',
+        });
+      });
+
+      // 2. 次の open 成功時に移行トランザクションが走る最中に、再度 DB利用不能状態で clearMedals（世代2）を発火させる
+      let hookedOpen = false;
+      let triggeredConcurrentClear = false;
+      globalThis.indexedDB.open = ((...args: Parameters<typeof globalThis.indexedDB.open>) => {
+        if (dbUnavailable) {
+          throw new DOMException('Temporary unavailable', 'InvalidStateError');
+        }
+        const req = originalOpen(...args);
+        if (!hookedOpen) {
+          hookedOpen = true;
+          req.addEventListener('success', () => {
+            const db = req.result;
+            const origTx = db.transaction.bind(db);
+            db.transaction = ((...txArgs: Parameters<typeof db.transaction>) => {
+              const tx = origTx(...txArgs);
+              if (!triggeredConcurrentClear) {
+                triggeredConcurrentClear = true;
+                // 移行トランザクション開始直後（完了前）に別操作として再度 clearMedals（世代2）を実行
+                dbUnavailable = true;
+                void result.current.clearMedals().finally(() => {
+                  dbUnavailable = false;
+                });
+              }
+              return tx;
+            }) as typeof db.transaction;
+          });
+        }
+        return req;
+      }) as typeof globalThis.indexedDB.open;
+
+      dbUnavailable = false;
+      await act(async () => {
+        await result.current.refreshMedals();
+        await result.current.refreshMedals();
+      });
+
+      expect(result.current.medals).toHaveLength(0);
+      expect(await result.current.loadMedalDetail('medal_clear_race_001')).toBeNull();
+    } finally {
+      globalThis.indexedDB.open = originalOpen;
+    }
   });
 });
