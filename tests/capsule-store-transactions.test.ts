@@ -323,7 +323,7 @@ describe('カプセル更新の排他制御と保存失敗', () => {
     expect(write).not.toHaveBeenCalled();
     expect(result.current.playerState.todayCombo).toBe(3);
 
-    currentNow = new Date('2026-10-23T08:00:00+09:00');
+    currentNow = new Date('2026-10-23T12:00:00+09:00');
     await act(async () => {
       await result.current.syncDateComboState();
     });
