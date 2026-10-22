@@ -164,11 +164,11 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
   }, []);
 
   // カプセル切り替え時（またはパス巡回時）・アンマウント時にタイマー・ドラッグ状態・ロックをクリーンアップ
+  // 注意: suppressNextClickRef は長押し開封やスワイプ直後の合成 click が次カプセルへ誤発火するのを防ぐためここではリセットしない
   useEffect(() => {
     clearLongPressTimers();
     crackStateRef.current = { capsuleKey: activeCapsuleKey, progress: 0 };
     isLockedForCapsuleKeyRef.current = null;
-    suppressNextClickRef.current = false;
     gestureRef.current = {
       active: false,
       inputType: null,
@@ -418,25 +418,17 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
       return;
     }
 
-    // 1秒長押し（340ms -> Stage 1, 670ms -> Stage 2, 1000ms -> 開封完了）
+    // 1秒長押し（340ms -> +1段階, 670ms -> +1段階, 1000ms -> 開封完了）
     const timer1 = setTimeout(() => {
       if (!gestureRef.current.active || gestureRef.current.isDragging) return;
       suppressNextClickRef.current = true;
-      const current =
-        crackStateRef.current.capsuleKey === targetKey ? crackStateRef.current.progress : 0;
-      if (current < 1) {
-        advanceCrackStep(targetKey, 1);
-      }
+      advanceCrackStep(targetKey);
     }, LONG_PRESS_STEP_1_MS);
 
     const timer2 = setTimeout(() => {
       if (!gestureRef.current.active || gestureRef.current.isDragging) return;
       suppressNextClickRef.current = true;
-      const current =
-        crackStateRef.current.capsuleKey === targetKey ? crackStateRef.current.progress : 0;
-      if (current < 2) {
-        advanceCrackStep(targetKey, 2);
-      }
+      advanceCrackStep(targetKey);
     }, LONG_PRESS_STEP_2_MS);
 
     const timer3 = setTimeout(() => {
@@ -449,19 +441,9 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
   };
 
   const handleStagePointerDown = (event: React.PointerEvent<HTMLElement>) => {
-    const isCapsuleButton =
-      event.target instanceof Element &&
-      Boolean(event.target.closest('[data-testid="active-capsule-button"]'));
-
-    if (typeof event.currentTarget.setPointerCapture === 'function') {
-      try {
-        event.currentTarget.setPointerCapture(event.pointerId);
-      } catch {
-        // JSDOM 等で setPointerCapture が未実装の場合でも安全に続行
-      }
-    }
-
-    startGesture('pointer', event.pointerId, event.clientX, event.clientY, isCapsuleButton);
+    // 親ドーム要素で setPointerCapture を呼ぶと pointerup の target が親へリターゲットされ、
+    // 子ボタン（active-capsule-button / Three.js canvas）でブラウザ標準の click イベントが発火しなくなるため呼ばない
+    startGesture('pointer', event.pointerId, event.clientX, event.clientY, true);
   };
 
   const handleStagePointerMove = (event: React.PointerEvent<HTMLElement>) => {
@@ -476,14 +458,6 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     if (!g.active || g.inputType !== 'pointer') return;
     if (g.identifier !== null && event.pointerId !== g.identifier) return;
 
-    if (typeof event.currentTarget.releasePointerCapture === 'function') {
-      try {
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      } catch {
-        // 安全に無視
-      }
-    }
-
     completeGesture(event.clientX, cancelled);
   };
 
@@ -491,10 +465,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     if (gestureRef.current.active) return;
     const touch = event.touches[0];
     if (!touch) return;
-    const isCapsuleButton =
-      event.target instanceof Element &&
-      Boolean(event.target.closest('[data-testid="active-capsule-button"]'));
-    startGesture('touch', touch.identifier, touch.clientX, touch.clientY, isCapsuleButton);
+    startGesture('touch', touch.identifier, touch.clientX, touch.clientY, true);
   };
 
   const handleStageTouchMove = (event: React.TouchEvent<HTMLElement>) => {
@@ -539,6 +510,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
   return (
     <div
       data-testid="capsule-stage-dome"
+      onClick={handleClick}
       onPointerDown={handleStagePointerDown}
       onPointerMove={handleStagePointerMove}
       onPointerUp={(e) => handleStagePointerUp(e, false)}
@@ -547,7 +519,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
       onTouchMove={handleStageTouchMove}
       onTouchEnd={(e) => handleStageTouchEnd(e, false)}
       onTouchCancel={(e) => handleStageTouchEnd(e, true)}
-      className="toy-acrylic-dome relative flex flex-1 flex-col items-center justify-between w-full my-1.5 rounded-[32px] p-3 min-h-0 overflow-hidden touch-none select-none"
+      className="toy-acrylic-dome relative flex flex-1 flex-col items-center justify-between w-full my-1.5 rounded-[32px] p-3 min-h-0 overflow-hidden touch-none select-none cursor-pointer"
     >
       {/* アクリルドームの左上ハイライト曲面反射 */}
       <div
@@ -652,7 +624,6 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
           {/* 中央：Three.js 3Dカプセルステージ本体（邪魔な2D黒枠を廃し3D空間で統合表現） */}
           <button
             type="button"
-            onClick={handleClick}
             onContextMenu={(e) => e.preventDefault()}
             disabled={isUpdating}
             data-testid="active-capsule-button"

@@ -121,6 +121,49 @@ describe('CapsuleStage (FR-06, FR-07, FR-09, FR-10: 1カプセル表示・クラ
     expect(onCrack).toHaveBeenCalledTimes(1);
   });
 
+  it('実機ブラウザのポインタータップ（pointerDown -> pointerUp -> click）でも二重進行せず確実に1段階ずつ割れる', () => {
+    const onCrack = vi.fn();
+    const onCrackStep = vi.fn();
+
+    render(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={false}
+        onCrack={onCrack}
+        onCrackStep={onCrackStep}
+        onPass={vi.fn()}
+        onRecycle={vi.fn()}
+      />,
+    );
+
+    const canvas = screen.getByTestId('three-capsule-canvas');
+    const titleSlip = screen.getByTestId('active-capsule-title');
+
+    // 1回目: Three.js 3Dキャンバス上のポインタータップ（pointerDown -> pointerUp -> click）
+    fireEvent.pointerDown(canvas, { pointerId: 1, clientX: 200, clientY: 200 });
+    fireEvent.pointerUp(canvas, { pointerId: 1, clientX: 200, clientY: 200 });
+    fireEvent.click(canvas);
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '1');
+    expect(onCrackStep).toHaveBeenCalledTimes(1);
+    expect(onCrackStep).toHaveBeenLastCalledWith(1);
+
+    // 2回目: タスク名プレート上のポインタータップ（pointerDown -> pointerUp -> click）
+    fireEvent.pointerDown(titleSlip, { pointerId: 2, clientX: 200, clientY: 320 });
+    fireEvent.pointerUp(titleSlip, { pointerId: 2, clientX: 200, clientY: 320 });
+    fireEvent.click(titleSlip);
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '2');
+    expect(onCrackStep).toHaveBeenCalledTimes(2);
+    expect(onCrackStep).toHaveBeenLastCalledWith(2);
+
+    // 3回目: ポインタータップで開封完了
+    fireEvent.pointerDown(canvas, { pointerId: 3, clientX: 200, clientY: 200 });
+    fireEvent.pointerUp(canvas, { pointerId: 3, clientX: 200, clientY: 200 });
+    fireEvent.click(canvas);
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '3');
+    expect(onCrack).toHaveBeenCalledTimes(1);
+  });
+
   it('1秒長押し（1000msホールド）で段階的にヒビが入り、自動的に開封完了が発火して直後のclickで二重発火しない', () => {
     vi.useFakeTimers();
     const onCrack = vi.fn();
