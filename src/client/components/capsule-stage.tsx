@@ -47,36 +47,32 @@ const CAPSULE_BADGE_CONFIG: Record<
   {
     label: string;
     bgClass: string;
-    shellGradientClass: string;
-    rimGlowClass: string;
+    auraColor: string;
   }
 > = {
   blue: {
     label: 'LIGHT CAPSULE ×1.0',
-    bgClass: 'bg-[#38BDF8] text-[#1E1B18]',
-    shellGradientClass:
-      'from-[#7DD3FC] via-[#0284C7] to-[#0369A1] shadow-[0_10px_24px_rgba(2,132,199,0.35)]',
-    rimGlowClass: 'ring-[#38BDF8]/60',
+    bgClass:
+      'bg-gradient-to-b from-[#7DD3FC] to-[#0284C7] text-[#1E1B18] shadow-[inset_0_2px_0_rgba(255,255,255,0.7),0_3px_0_#1E1B18]',
+    auraColor: 'rgba(56, 189, 248, 0.38)',
   },
   red: {
     label: 'MEDIUM CAPSULE ×1.5',
-    bgClass: 'bg-[#FF4D4D] text-white',
-    shellGradientClass:
-      'from-[#FDA4AF] via-[#EF4444] to-[#B91C1C] shadow-[0_10px_24px_rgba(239,68,68,0.35)]',
-    rimGlowClass: 'ring-[#FF4D4D]/60',
+    bgClass:
+      'bg-gradient-to-b from-[#FF6B78] to-[#E11D48] text-white shadow-[inset_0_2px_0_rgba(255,255,255,0.45),0_3px_0_#1E1B18]',
+    auraColor: 'rgba(251, 113, 133, 0.38)',
   },
   gold: {
     label: 'GOLD CAPSULE ×2.0',
-    bgClass: 'bg-[#FFBE0B] text-[#1E1B18]',
-    shellGradientClass:
-      'from-[#FEF08A] via-[#FFBE0B] to-[#B45309] shadow-[0_10px_28px_rgba(245,158,11,0.45)]',
-    rimGlowClass: 'ring-[#FFBE0B]/75',
+    bgClass:
+      'bg-gradient-to-b from-[#FEF08A] via-[#FFBE0B] to-[#D97706] text-[#1E1B18] shadow-[inset_0_2px_0_rgba(255,255,255,0.85),0_3px_0_#1E1B18]',
+    auraColor: 'rgba(250, 204, 21, 0.48)',
   },
 };
 
 /**
  * FR-06, FR-07, FR-09, FR-10:
- * 画面中央に常に1個の未開封カプセルのみを表示し、
+ * 画面中央に常に1個の未開封カプセルのみをThree.js 3D空間で表示し、
  * タップ連打 / 1秒長押しによる段階的クラック開封、左スワイプ先送り、右スワイプリサイクルを制御するステージ。
  */
 export const CapsuleStage: React.FC<CapsuleStageProps> = ({
@@ -194,7 +190,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
       if (isLockedForCapsuleKeyRef.current === targetKey) return;
       isLockedForCapsuleKeyRef.current = targetKey;
       clearLongPressTimers();
-      // Stage 3（progress: 3）を保持し、開封の瞬間（閃光スターバースト・3D開口・ゲージ3/3）を描画する
+      // Stage 3（progress: 3）を保持し、開封の瞬間（3D開口・閃光・ゲージ3/3）を描画する
       crackStateRef.current = { capsuleKey: targetKey, progress: 3 };
       setInteractionState({
         capsuleKey: targetKey,
@@ -250,7 +246,6 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
           g.isDragging = true;
           suppressNextClickRef.current = true;
           clearLongPressTimers();
-          // 縦移動よりも横移動が小さい場合でも長押しは解除する
           if (absDy > absDx * 2 && absDx < SWIPE_DRAG_SLOP_PX) {
             return;
           }
@@ -554,17 +549,22 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
       onTouchCancel={(e) => handleStageTouchEnd(e, true)}
       className="toy-acrylic-dome relative flex flex-1 flex-col items-center justify-between w-full my-1.5 rounded-[32px] p-3 min-h-0 overflow-hidden touch-none select-none"
     >
-      {/* アクリルドームの左上ハイライト反射 */}
+      {/* アクリルドームの左上ハイライト曲面反射 */}
       <div
         aria-hidden="true"
         className="pointer-events-none absolute -top-6 -left-6 h-28 w-44 -rotate-12 rounded-full bg-white/55 blur-[2px]"
+      />
+      {/* ドーム底面の立体ステージフロア反射 */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-12 left-1/2 -translate-x-1/2 h-14 w-64 rounded-full bg-white/45 blur-md"
       />
 
       {/* 筐体コーナーのビス装飾 */}
       <span aria-hidden="true" className="toy-screw absolute top-3 left-3" />
       <span aria-hidden="true" className="toy-screw absolute top-3 right-3" />
 
-      {/* リサイクル完了（+5コイン）やパス演出のフロートトースト */}
+      {/* リサイクル完了（+5コイン）やパス演出の立体カプセルプレートトースト */}
       {toastNotification && (
         <div
           role="status"
@@ -576,12 +576,12 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
                 ? 'pass-toast'
                 : 'crack-toast'
           }
-          className={`pointer-events-none absolute top-18 left-1/2 z-30 -translate-x-1/2 flex items-center gap-1.5 rounded-full border-2 border-[#1E1B18] px-3.5 py-1 text-xs font-black whitespace-nowrap shadow-[0_4px_0_#1E1B18] ${
+          className={`pointer-events-none absolute top-13 left-1/2 z-30 -translate-x-1/2 flex items-center gap-1.5 rounded-full border-2 border-[#1E1B18] px-3.5 py-1 text-xs font-black whitespace-nowrap shadow-[inset_0_2px_0_rgba(255,255,255,0.65),0_4px_0_#1E1B18] ${
             toastNotification.type === 'recycle'
-              ? 'bg-[#6EE7B7] text-[#064E3B]'
+              ? 'bg-gradient-to-b from-[#A7F3D0] to-[#34D399] text-[#064E3B]'
               : toastNotification.type === 'pass'
-                ? 'bg-[#7DD3FC] text-[#0C4A6E]'
-                : 'bg-[#FFBE0B] text-[#1E1B18]'
+                ? 'bg-gradient-to-b from-[#BAE6FD] to-[#38BDF8] text-[#0C4A6E]'
+                : 'bg-gradient-to-b from-[#FEF08A] to-[#FFBE0B] text-[#1E1B18]'
           }`}
         >
           <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -591,65 +591,65 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
 
       {activeCapsule ? (
         <>
-          {/* 上部：カプセルレア度タグ＆3段階クラックゲージ */}
+          {/* 上部：立体レア度プレート＆3連ドームLEDクラックゲージ */}
           <div className="relative z-10 flex w-full items-center justify-between px-4 pt-0.5">
             <span
               data-testid="active-capsule-badge"
-              className={`inline-flex items-center gap-1 rounded-full border-2 border-[#1E1B18] px-2.5 py-0.5 font-display text-[11px] font-bold tracking-wide shadow-[0_2px_0_#1E1B18] ${activeBadge.bgClass}`}
+              className={`inline-flex items-center gap-1 rounded-full border-2 border-[#1E1B18] px-2.5 py-0.5 font-display text-[11px] font-bold tracking-wide ${activeBadge.bgClass}`}
             >
               <Zap className="h-3 w-3 fill-current" aria-hidden="true" />
               {activeBadge.label}
             </span>
 
-            {/* 3段階クラックランプ */}
+            {/* 3段階クラックドームLEDランプ */}
             <div
               aria-label={`ヒビ割れ段階 ${crackProgress}/3`}
               data-testid="crack-progress-gauge"
-              className="flex items-center gap-1 rounded-full bg-[#1E1B18] px-2.5 py-1 border-2 border-white/80"
+              className="flex items-center gap-1.5 rounded-full bg-gradient-to-b from-[#292524] to-[#1C1917] px-2.5 py-1 border-2 border-white/85 shadow-[inset_0_2px_3px_rgba(0,0,0,0.6),0_2px_0_#1E1B18]"
             >
               {[1, 2, 3].map((step) => (
                 <span
                   key={step}
-                  className={`h-2.5 w-2.5 rounded-full border border-[#1E1B18] transition-colors ${
-                    crackProgress >= step ? 'bg-[#FFBE0B] shadow-[0_0_6px_#FFBE0B]' : 'bg-[#44403C]'
+                  className={`h-2.5 w-2.5 rounded-full border border-[#1E1B18] transition-all ${
+                    crackProgress >= step
+                      ? 'bg-[radial-gradient(circle_at_35%_30%,#FFFBEB_0%,#FFBE0B_55%,#D97706_100%)] shadow-[0_0_8px_#FFBE0B]'
+                      : 'bg-[radial-gradient(circle_at_35%_30%,#57534E_0%,#292524_100%)]'
                   }`}
                 />
               ))}
-              <span className="ml-1 font-display text-[10px] font-bold text-[#FFF8EC]">
+              <span className="ml-0.5 font-display text-[10px] font-bold text-[#FFF8EC]">
                 {crackProgress}/3
               </span>
             </div>
           </div>
 
-          {/* 左右スワイプ操作ガイドピル（ドラッグ中にハイライト） */}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none relative z-10 flex w-full items-center justify-between px-1 text-[10px] font-black"
-          >
-            <span
-              className={`inline-flex items-center gap-1 rounded-full border-2 border-[#1E1B18] px-2 py-0.5 transition-transform ${
-                isSwipingLeft
-                  ? 'scale-110 bg-[#38BDF8] text-[#1E1B18] shadow-[0_2px_0_#1E1B18]'
-                  : 'bg-white/75 text-[#0C4A6E]'
-              }`}
+          {/* スワイプドラッグ中のみ立体的に浮かび上がる左右アクションインジケーター */}
+          {isActivelyDragging && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-x-3 top-1/2 -translate-y-1/2 z-20 flex items-center justify-between"
             >
-              <RefreshCw className="h-2.5 w-2.5" />
-              <span>{remainingCount > 1 ? '← 左スワイプ: パス' : '← 残1個'}</span>
-            </span>
+              <div
+                className={`flex items-center gap-1 rounded-2xl border-2 border-[#1E1B18] bg-gradient-to-b from-[#BAE6FD] to-[#38BDF8] px-2.5 py-1.5 text-xs font-black text-[#1E1B18] shadow-[inset_0_2px_0_rgba(255,255,255,0.7),0_4px_0_#1E1B18] transition-all ${
+                  isSwipingLeft ? 'opacity-100 scale-105' : 'opacity-0 -translate-x-2 scale-90'
+                }`}
+              >
+                <RefreshCw className="h-3.5 w-3.5 stroke-[2.75]" />
+                <span>{remainingCount > 1 ? 'パス' : '残1個'}</span>
+              </div>
 
-            <span
-              className={`inline-flex items-center gap-1 rounded-full border-2 border-[#1E1B18] px-2 py-0.5 transition-transform ${
-                isSwipingRight
-                  ? 'scale-110 bg-[#34D399] text-[#1E1B18] shadow-[0_2px_0_#1E1B18]'
-                  : 'bg-white/75 text-[#065F46]'
-              }`}
-            >
-              <span>右スワイプ: 破棄(+5) →</span>
-              <Trash2 className="h-2.5 w-2.5" />
-            </span>
-          </div>
+              <div
+                className={`flex items-center gap-1 rounded-2xl border-2 border-[#1E1B18] bg-gradient-to-b from-[#A7F3D0] to-[#34D399] px-2.5 py-1.5 text-xs font-black text-[#1E1B18] shadow-[inset_0_2px_0_rgba(255,255,255,0.7),0_4px_0_#1E1B18] transition-all ${
+                  isSwipingRight ? 'opacity-100 scale-105' : 'opacity-0 translate-x-2 scale-90'
+                }`}
+              >
+                <Trash2 className="h-3.5 w-3.5 stroke-[2.75]" />
+                <span>+5</span>
+              </div>
+            </div>
+          )}
 
-          {/* 中央：1カプセル表示＆クラック操作ボタン（タップ連打・1秒長押し・左右スワイプ対応） */}
+          {/* 中央：Three.js 3Dカプセルステージ本体（邪魔な2D黒枠を廃し3D空間で統合表現） */}
           <button
             type="button"
             onClick={handleClick}
@@ -658,123 +658,80 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
             data-testid="active-capsule-button"
             aria-label={`現在のカプセルタスク: ${activeCapsule.title}。タップ連打または1秒長押しで開封、左スワイプでパス、右スワイプでリサイクル`}
             style={{
-              transform: `translateX(${dragOffsetX}px) rotate(${dragOffsetX * 0.14}deg) scale(${
-                isPressing ? 0.96 : 1
-              })`,
+              transform: `perspective(700px) translate3d(${dragOffsetX * 0.45}px, 0, 0) rotateY(${
+                dragOffsetX * 0.14
+              }deg) rotateZ(${dragOffsetX * 0.06}deg)`,
             }}
             className={`group relative z-10 my-auto flex flex-col items-center justify-center focus:outline-none cursor-grab active:cursor-grabbing touch-none select-none ${
               isActivelyDragging ? 'transition-none' : 'transition-transform duration-150'
             }`}
           >
-            {/* 3D風グラデーション＆光沢シェル背景（Three.jsキャンバスの背面ハロー＆フォールバック立体表現） */}
+            {/* 3Dカプセル背面の空間ボリューメトリック・オーラ（2Dの黒枠線は使わず奥行き光のみを表現） */}
             <div
               data-testid="capsule-3d-shell"
               data-capsule-color={activeCapsule.capsuleColor}
-              className={`pointer-events-none absolute h-44 w-44 sm:h-48 sm:w-48 rounded-full border-4 border-[#1E1B18] overflow-hidden ring-4 ${activeBadge.rimGlowClass} transition-transform ${
-                isPressing ? 'scale-105' : 'group-hover:scale-[1.02]'
+              aria-hidden="true"
+              style={{
+                background: `radial-gradient(circle, ${activeBadge.auraColor} 0%, rgba(255,255,255,0) 70%)`,
+              }}
+              className={`pointer-events-none absolute h-56 w-56 sm:h-60 sm:w-60 rounded-full transition-transform duration-200 ${
+                isPressing || crackProgress > 0 ? 'scale-115' : 'scale-100'
               }`}
-            >
-              {/* 上半球：カラー3Dグラデーション＋光沢ハイライト */}
-              <div
-                className={`relative h-1/2 w-full bg-gradient-to-b ${activeBadge.shellGradientClass} border-b-3 border-[#1E1B18]`}
-              >
-                <span className="absolute top-2.5 left-5 h-5 w-14 -rotate-12 rounded-full bg-white/65 blur-[1px]" />
-                <span className="absolute top-7 left-4 h-2.5 w-5 -rotate-12 rounded-full bg-white/45" />
-              </div>
-              {/* 下半球：半透明フロストホワイト＋立体陰影 */}
-              <div className="relative h-1/2 w-full bg-gradient-to-b from-[#FFFFFF] via-[#F8FAFC] to-[#CBD5E1]">
-                <span className="absolute bottom-3 right-6 h-4 w-12 -rotate-12 rounded-full bg-white/80" />
-              </div>
-            </div>
+            />
 
-            {/* Three.js 3Dカプセルキャンバス */}
+            {/* Three.js 3Dカプセルキャンバス（3D開口・3Dクラックシャード・3Dスワイプ転がり） */}
             <ThreeCapsuleCanvas
               capsuleColor={activeCapsule.capsuleColor}
               crackProgress={crackProgress}
               interactionTrigger={combinedTrigger}
+              dragOffsetX={dragOffsetX}
+              isPressing={isPressing}
             />
 
-            {/* 段階的ヒビ割れ（クラックSVG）オーバーレイ（FR-10） */}
+            {/* 3D空間に溶け込む繊細なリム発光エフェクトレイヤー（2Dの黒い太線は描かず立体グロウのみ） */}
             <svg
               viewBox="0 0 200 200"
               data-testid="capsule-crack-svg"
               data-crack-step={crackProgress}
               aria-hidden="true"
-              className="pointer-events-none absolute inset-0 m-auto h-48 w-48 sm:h-52 sm:w-52 z-20"
+              className="pointer-events-none absolute inset-0 m-auto h-56 w-56 sm:h-60 sm:w-60 z-20"
             >
-              {/* 長押しホールド中の外周チャージリング */}
-              {isPressing && (
-                <circle
-                  cx="100"
-                  cy="100"
-                  r="90"
-                  fill="none"
-                  stroke="#FFBE0B"
-                  strokeWidth="5"
-                  strokeDasharray="18 10"
-                  className="animate-spin"
-                />
-              )}
+              <defs>
+                <radialGradient id="stage3dGlow" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="#FFFBEB" stopOpacity="0.85" />
+                  <stop offset="45%" stopColor="#FDE047" stopOpacity="0.35" />
+                  <stop offset="100%" stopColor="#FFBE0B" stopOpacity="0" />
+                </radialGradient>
+              </defs>
 
-              {/* Stage 1 ヒビ割れ：中央シームから上下へ走る初期クラック */}
               {crackProgress >= 1 && (
                 <g data-testid="crack-layer-1">
-                  <path
-                    d="M 68 100 L 86 84 L 96 98 L 112 74 L 128 100 L 106 118 L 90 104 Z"
-                    fill="rgba(255, 243, 176, 0.35)"
-                    stroke="#1E1B18"
-                    strokeWidth="4"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M 56 100 L 84 96 L 98 72 L 108 98 L 138 94"
-                    fill="none"
-                    stroke="#FFFBEB"
-                    strokeWidth="3.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
+                  <ellipse cx="100" cy="102" rx="48" ry="10" fill="url(#stage3dGlow)" />
                 </g>
               )}
 
-              {/* Stage 2 ヒビ割れ：ドーム全体へ広がる大きな放射状クラック＆光漏れ */}
               {crackProgress >= 2 && (
                 <g data-testid="crack-layer-2">
-                  <path
-                    d="M 98 72 L 82 48 L 94 34 M 108 98 L 126 128 L 116 154 M 84 96 L 62 124 L 46 132 M 122 86 L 148 64"
-                    fill="none"
-                    stroke="#1E1B18"
-                    strokeWidth="4.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M 98 72 L 82 48 L 94 34 M 108 98 L 126 128 L 116 154 M 84 96 L 62 124 L 46 132 M 122 86 L 148 64"
-                    fill="none"
-                    stroke="#FFBE0B"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <circle cx="100" cy="96" r="10" fill="#FEF08A" opacity="0.85" />
+                  <ellipse cx="100" cy="98" rx="68" ry="18" fill="url(#stage3dGlow)" />
                 </g>
               )}
 
-              {/* Stage 3 開封瞬間：パカッと割れる閃光スターバースト */}
               {crackProgress >= 3 && (
                 <g data-testid="crack-layer-3">
-                  <circle cx="100" cy="100" r="64" fill="#FEF08A" opacity="0.75" />
+                  <circle cx="100" cy="98" r="76" fill="url(#stage3dGlow)" />
                 </g>
               )}
             </svg>
           </button>
 
-          {/* 下部：カプセル同梱ミニブック風タスク名スリップ（スワイプ連動で少し追従） */}
+          {/* 下部：立体成形のミニブック風タスク名プレート（3Dパースペクティブ連動） */}
           <div
             style={{
-              transform: `translateX(${dragOffsetX * 0.35}px)`,
+              transform: `perspective(600px) translate3d(${dragOffsetX * 0.25}px, 0, 0) rotateY(${
+                dragOffsetX * 0.08
+              }deg)`,
             }}
-            className={`relative z-10 w-full rounded-2xl bg-[#FFFDF9] border-3 border-[#1E1B18] px-3.5 py-2 shadow-[0_4px_0_#1E1B18] ${
+            className={`toy-cream-panel relative z-10 w-full rounded-2xl px-3.5 py-2 ${
               isActivelyDragging ? 'transition-none' : 'transition-transform duration-150'
             }`}
           >
@@ -796,7 +753,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
                       : crackProgress >= 3
                         ? 'パカッ！カプセル開封！'
                         : crackProgress === 0
-                          ? 'タップ連打 または 1秒長押しで割る！'
+                          ? '3Dカプセルをタップ連打 / 1秒長押しで割る！'
                           : `ヒビ割れ ${crackProgress}/3（あと ${3 - crackProgress} 回タップ）`}
               </span>
             </div>
@@ -805,7 +762,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
       ) : (
         <div
           data-testid="empty-capsule-stage"
-          className="relative z-10 my-auto flex flex-col items-center justify-center rounded-2xl bg-[#FFFDF9] border-3 border-[#1E1B18] px-5 py-7 text-center shadow-[0_5px_0_#1E1B18]"
+          className="toy-cream-panel relative z-10 my-auto flex flex-col items-center justify-center rounded-2xl px-5 py-7 text-center"
         >
           <p className="font-toy text-base text-[#1E1B18]">すべてのカプセルを開封しました！</p>
           <p className="mt-1.5 text-xs font-bold text-[#57534E]">
