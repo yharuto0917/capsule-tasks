@@ -18,6 +18,7 @@ export interface AudioParamLike {
   setValueAtTime?(value: number, startTime: number): unknown;
   linearRampToValueAtTime?(value: number, endTime: number): unknown;
   exponentialRampToValueAtTime?(value: number, endTime: number): unknown;
+  cancelScheduledValues?(startTime: number): unknown;
 }
 
 /**
@@ -111,6 +112,78 @@ type GlobalWithWebkitAudio = typeof globalThis & {
 };
 
 let sharedAudioContext: AudioContextLike | null = null;
+const masterGainByContext = new WeakMap<AudioContextLike, GainNodeLike>();
+const mutedByContext = new WeakMap<AudioContextLike, boolean>();
+const trackedContexts = new Set<AudioContextLike>();
+let isSharedMasterMuted = false;
+
+/**
+ * AudioContext ごとの共通マスター GainNode を取得・初期化する。
+ * すべての効果音オシレーターはこの共通 GainNode を経由して destination へ出力されるため、
+ * 再生途中にミュートされた場合でもマスターゲインを 0 にすることで予約済みノートを即座に消音できる。
+ */
+export function getOrCreateMasterGain(ctx: AudioContextLike): GainNodeLike {
+  trackedContexts.add(ctx);
+  const existing = masterGainByContext.get(ctx);
+  if (existing) {
+    return existing;
+  }
+
+  const masterGain = ctx.createGain();
+  const isMuted = mutedByContext.get(ctx) ?? isSharedMasterMuted;
+  const initialGain = isMuted ? 0 : 1;
+  const now =
+    typeof ctx.currentTime === 'number' && Number.isFinite(ctx.currentTime) ? ctx.currentTime : 0;
+
+  masterGain.gain.value = initialGain;
+  if (typeof masterGain.gain.setValueAtTime === 'function') {
+    masterGain.gain.setValueAtTime(initialGain, now);
+  }
+  masterGain.connect(ctx.destination);
+  masterGainByContext.set(ctx, masterGain);
+  return masterGain;
+}
+
+/**
+ * 共通マスター GainNode のミュート状態（ゲイン 0 / 1）を即座に切り替える。
+ * AudioContext が未初期化の場合は新規作成を行わない。
+ */
+export function setSoundMasterMuted(muted: boolean, ctx?: AudioContextLike | null): void {
+  isSharedMasterMuted = muted;
+  if (ctx) {
+    mutedByContext.set(ctx, muted);
+  }
+  const targetGainValue = muted ? 0 : 1;
+
+  const targets = new Set<AudioContextLike>(trackedContexts);
+  if (ctx) {
+    targets.add(ctx);
+  }
+  if (sharedAudioContext && sharedAudioContext.state !== 'closed') {
+    targets.add(sharedAudioContext);
+  }
+
+  for (const targetCtx of targets) {
+    mutedByContext.set(targetCtx, muted);
+    const masterGain = masterGainByContext.get(targetCtx);
+    if (!masterGain) {
+      continue;
+    }
+    const now =
+      typeof targetCtx.currentTime === 'number' && Number.isFinite(targetCtx.currentTime)
+        ? targetCtx.currentTime
+        : 0;
+    try {
+      masterGain.gain.cancelScheduledValues?.(now);
+      if (typeof masterGain.gain.setValueAtTime === 'function') {
+        masterGain.gain.setValueAtTime(targetGainValue, now);
+      }
+      masterGain.gain.value = targetGainValue;
+    } catch {
+      // AudioParam 操作時の例外は無視する
+    }
+  }
+}
 
 /**
  * ブラウザ環境の AudioContext シングルトンを遅延取得・初期化する。
@@ -149,6 +222,8 @@ export function getOrCreateAudioContext(
  * 共有 AudioContext シングルトンを破棄・リセットする（単体テストの分離用）
  */
 export function resetSharedAudioContext(): void {
+  isSharedMasterMuted = false;
+  trackedContexts.clear();
   if (sharedAudioContext && typeof sharedAudioContext.close === 'function') {
     try {
       void Promise.resolve(sharedAudioContext.close()).catch(() => undefined);
@@ -176,12 +251,13 @@ export function ensureAudioContextResumed(ctx: AudioContextLike): void {
 }
 
 /**
- * 単一ノートを OscillatorNode + GainNode でスケジュール再生する
+ * 単一ノートを OscillatorNode + GainNode でスケジュール再生し、共通マスター GainNode へ接続する
  */
 function scheduleNote(
   ctx: AudioContextLike,
   note: SynthesizedNoteDescriptor,
   baseTime: number,
+  masterGain: GainNodeLike,
 ): boolean {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -229,7 +305,7 @@ function scheduleNote(
   }
 
   osc.connect(gain);
-  gain.connect(ctx.destination);
+  gain.connect(masterGain);
 
   osc.onended = () => {
     try {
@@ -266,15 +342,21 @@ function scheduleNoteSequence(
   if (!activeCtx || notes.length === 0) {
     return false;
   }
+  const isMuted =
+    mutedByContext.get(activeCtx) ?? (ctx === undefined ? isSharedMasterMuted : false);
+  if (isMuted) {
+    return false;
+  }
 
   try {
     ensureAudioContextResumed(activeCtx);
+    const masterGain = getOrCreateMasterGain(activeCtx);
     const baseTime =
       typeof activeCtx.currentTime === 'number' && Number.isFinite(activeCtx.currentTime)
         ? activeCtx.currentTime
         : 0;
     for (const note of notes) {
-      scheduleNote(activeCtx, note, baseTime);
+      scheduleNote(activeCtx, note, baseTime, masterGain);
     }
     return true;
   } catch {

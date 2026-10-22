@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 import { isValidMedalRarity, type MedalRarity } from '../../shared/schemas';
 import {
   FANFARE_HAPTIC_PATTERNS,
   HAPTIC_PATTERNS,
   ensureAudioContextResumed,
   getOrCreateAudioContext,
+  setSoundMasterMuted,
   synthesizeCrackSound,
   synthesizeFanfareSound,
   synthesizePassSound,
@@ -77,12 +78,20 @@ export function useSoundEffect(
   const hapticsEnabled = normalizedOptions.hapticsEnabled ?? true;
   const customFactory = normalizedOptions.createAudioContext;
 
+  const soundEnabledRef = useRef<boolean>(soundEnabled);
+  const hapticsEnabledRef = useRef<boolean>(hapticsEnabled);
   const customFactoryRef = useRef<(() => AudioContextLike | null) | undefined>(customFactory);
   const customCtxRef = useRef<AudioContextLike | null>(null);
 
-  useEffect(() => {
+  // Web Locks 待機中に別タブの storage イベント等で soundEnabled が OFF に切り替わった場合でも、
+  // 待機開始前に捕捉された古い再生コールバックが最新のミュート状態を参照できるよう ref を同期更新し、
+  // 既に予約済みのファンファーレ等も共通マスター GainNode のゲイン 0 化で即座に消音する。
+  useLayoutEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+    hapticsEnabledRef.current = hapticsEnabled;
     customFactoryRef.current = customFactory;
-  }, [customFactory]);
+    setSoundMasterMuted(!soundEnabled, customCtxRef.current);
+  }, [soundEnabled, hapticsEnabled, customFactory]);
 
   const resolveAudioContext = useCallback((): AudioContextLike | null => {
     const factory = customFactoryRef.current;
@@ -96,76 +105,89 @@ export function useSoundEffect(
     return getOrCreateAudioContext();
   }, []);
 
-  const vibrate = useCallback(
-    (pattern: number | number[] = 20): boolean => {
-      if (!hapticsEnabled) {
-        return false;
-      }
-      return triggerHapticFeedback(pattern);
-    },
-    [hapticsEnabled],
-  );
+  const vibrate = useCallback((pattern: number | number[] = 20): boolean => {
+    if (!hapticsEnabledRef.current) {
+      return false;
+    }
+    return triggerHapticFeedback(pattern);
+  }, []);
 
   const unlockAudio = useCallback((): boolean => {
-    if (!soundEnabled) {
+    if (!soundEnabledRef.current) {
       return false;
     }
     const ctx = resolveAudioContext();
     if (!ctx) {
       return false;
     }
+    setSoundMasterMuted(false, ctx);
     ensureAudioContextResumed(ctx);
     return true;
-  }, [resolveAudioContext, soundEnabled]);
+  }, [resolveAudioContext]);
 
   const playSupply = useCallback((): boolean => {
-    vibrate(HAPTIC_PATTERNS.supply);
-    if (!soundEnabled) {
+    if (!soundEnabledRef.current) {
+      setSoundMasterMuted(true, customCtxRef.current);
       return false;
     }
-    return synthesizeSupplySound(resolveAudioContext());
-  }, [resolveAudioContext, soundEnabled, vibrate]);
+    vibrate(HAPTIC_PATTERNS.supply);
+    const ctx = resolveAudioContext();
+    setSoundMasterMuted(false, ctx);
+    return synthesizeSupplySound(ctx);
+  }, [resolveAudioContext, vibrate]);
 
   const playCrack = useCallback(
     (step: number = 1): boolean => {
+      if (!soundEnabledRef.current) {
+        setSoundMasterMuted(true, customCtxRef.current);
+        return false;
+      }
       const clampedStep = Number.isFinite(step) ? Math.min(Math.max(Math.trunc(step), 1), 3) : 1;
       const crackVibration = clampedStep === 1 ? HAPTIC_PATTERNS.crack : [15 + clampedStep * 6];
       vibrate(crackVibration);
-      if (!soundEnabled) {
-        return false;
-      }
-      return synthesizeCrackSound(resolveAudioContext(), clampedStep);
+      const ctx = resolveAudioContext();
+      setSoundMasterMuted(false, ctx);
+      return synthesizeCrackSound(ctx, clampedStep);
     },
-    [resolveAudioContext, soundEnabled, vibrate],
+    [resolveAudioContext, vibrate],
   );
 
   const playFanfare = useCallback(
     (rarity: MedalRarity = 'N'): boolean => {
-      const safeRarity: MedalRarity = isValidMedalRarity(rarity) ? rarity : 'N';
-      vibrate(FANFARE_HAPTIC_PATTERNS[safeRarity]);
-      if (!soundEnabled) {
+      if (!soundEnabledRef.current) {
+        setSoundMasterMuted(true, customCtxRef.current);
         return false;
       }
-      return synthesizeFanfareSound(resolveAudioContext(), safeRarity);
+      const safeRarity: MedalRarity = isValidMedalRarity(rarity) ? rarity : 'N';
+      vibrate(FANFARE_HAPTIC_PATTERNS[safeRarity]);
+      const ctx = resolveAudioContext();
+      setSoundMasterMuted(false, ctx);
+      return synthesizeFanfareSound(ctx, safeRarity);
     },
-    [resolveAudioContext, soundEnabled, vibrate],
+    [resolveAudioContext, vibrate],
   );
 
   const playPass = useCallback((): boolean => {
-    vibrate(HAPTIC_PATTERNS.pass);
-    if (!soundEnabled) {
+    if (!soundEnabledRef.current) {
+      setSoundMasterMuted(true, customCtxRef.current);
       return false;
     }
-    return synthesizePassSound(resolveAudioContext());
-  }, [resolveAudioContext, soundEnabled, vibrate]);
+    vibrate(HAPTIC_PATTERNS.pass);
+    const ctx = resolveAudioContext();
+    setSoundMasterMuted(false, ctx);
+    return synthesizePassSound(ctx);
+  }, [resolveAudioContext, vibrate]);
 
   const playRecycle = useCallback((): boolean => {
-    vibrate(HAPTIC_PATTERNS.recycle);
-    if (!soundEnabled) {
+    if (!soundEnabledRef.current) {
+      setSoundMasterMuted(true, customCtxRef.current);
       return false;
     }
-    return synthesizeRecycleSound(resolveAudioContext());
-  }, [resolveAudioContext, soundEnabled, vibrate]);
+    vibrate(HAPTIC_PATTERNS.recycle);
+    const ctx = resolveAudioContext();
+    setSoundMasterMuted(false, ctx);
+    return synthesizeRecycleSound(ctx);
+  }, [resolveAudioContext, vibrate]);
 
   const playSound = useCallback(
     (type: SoundEffectType, options: PlaySoundOptions = {}): boolean => {

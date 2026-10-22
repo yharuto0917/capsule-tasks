@@ -96,9 +96,12 @@ function createMockAudioContext(initialState: AudioContextState = 'running') {
         disconnected: false,
         gain: {
           value: 1,
-          setValueAtTime: vi.fn(),
+          setValueAtTime: vi.fn((val: number) => {
+            gain.gain.value = val;
+          }),
           linearRampToValueAtTime: vi.fn(),
           exponentialRampToValueAtTime: vi.fn(),
+          cancelScheduledValues: vi.fn(),
         },
         connect: vi.fn(),
         disconnect: vi.fn(() => {
@@ -150,15 +153,17 @@ describe('sound-synth (Web Audio API プロシージャル効果音合成)', () 
     const afterRecycleCount = mockCtx.oscillators.length;
     expect(afterRecycleCount).toBeGreaterThan(afterPassCount);
 
-    // すべてのオシレーターが GainNode を経由して destination に接続され、start/stop が呼ばれていること
+    // すべてのオシレーターがノート別 GainNode → 共通マスター GainNode → destination の順に接続され、start/stop が呼ばれていること
+    const masterGain = mockCtx.gains[0];
+    expect(masterGain.connect).toHaveBeenCalledWith(mockCtx.destination);
     for (const osc of mockCtx.oscillators) {
       expect(osc.connect).toHaveBeenCalledTimes(1);
       expect(osc.startedAt).toHaveLength(1);
       expect(osc.stoppedAt).toHaveLength(1);
       expect(osc.stoppedAt[0]).toBeGreaterThan(osc.startedAt[0]);
     }
-    for (const gain of mockCtx.gains) {
-      expect(gain.connect).toHaveBeenCalledWith(mockCtx.destination);
+    for (const noteGain of mockCtx.gains.slice(1)) {
+      expect(noteGain.connect).toHaveBeenCalledWith(masterGain);
     }
 
     // ネットワークリクエストが一切発生していないこと
@@ -209,18 +214,20 @@ describe('sound-synth (Web Audio API プロシージャル効果音合成)', () 
     );
   });
 
-  it('オシレーター終了時（onended）に OscillatorNode と GainNode が disconnect されメモリリークを防ぐ', () => {
+  it('オシレーター終了時（onended）に OscillatorNode とノート用 GainNode が disconnect されメモリリークを防ぐ（共通マスター GainNode は維持）', () => {
     const mockCtx = createMockAudioContext();
     synthesizeSupplySound(mockCtx);
 
+    const masterGain = mockCtx.gains[0];
     const firstOsc = mockCtx.oscillators[0];
-    const firstGain = mockCtx.gains[0];
+    const firstNoteGain = mockCtx.gains[1];
     expect(firstOsc.disconnected).toBe(false);
-    expect(firstGain.disconnected).toBe(false);
+    expect(firstNoteGain.disconnected).toBe(false);
 
     firstOsc.onended?.call(firstOsc as unknown as AudioScheduledSourceNode, new Event('ended'));
     expect(firstOsc.disconnected).toBe(true);
-    expect(firstGain.disconnected).toBe(true);
+    expect(firstNoteGain.disconnected).toBe(true);
+    expect(masterGain.disconnected).toBe(false);
   });
 
   it('AudioContext が suspended 状態の場合は再生時に resume() を呼び出し、resume が失敗しても例外を投げない', () => {
@@ -334,6 +341,77 @@ describe('useSoundEffect フック（ミュート制御・ハプティクス・�
     expect(result.current.soundEnabled).toBe(false);
     expect(result.current.playCrack(1)).toBe(false);
     expect(mockCtx.oscillators).toHaveLength(countAfterEnable);
+  });
+
+  it('ファンファーレ再生直後にミュートへ切り替えた場合、共通マスター GainNode のゲインが即座に 0 になり予約済みノートが鳴り続けない', () => {
+    const mockCtx = createMockAudioContext();
+
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useSoundEffect({
+          soundEnabled: enabled,
+          createAudioContext: () => mockCtx,
+        }),
+      { initialProps: { enabled: true } },
+    );
+
+    // 最大約750ms先までノートが予約されるSSRファンファーレを開始
+    expect(result.current.playFanfare('SSR')).toBe(true);
+    const masterGain = mockCtx.gains[0];
+    expect(masterGain.gain.value).toBe(1);
+
+    // 再生途中にミュートへ切り替え → 共通マスター GainNode のゲインが即座に 0 になること
+    rerender({ enabled: false });
+    expect(masterGain.gain.cancelScheduledValues).toHaveBeenCalledWith(mockCtx.currentTime);
+    expect(masterGain.gain.setValueAtTime).toHaveBeenLastCalledWith(0, mockCtx.currentTime);
+    expect(masterGain.gain.value).toBe(0);
+
+    // 再度 ON に戻すとマスターゲインが 1 に復帰すること
+    rerender({ enabled: true });
+    expect(masterGain.gain.setValueAtTime).toHaveBeenLastCalledWith(1, mockCtx.currentTime);
+    expect(masterGain.gain.value).toBe(1);
+  });
+
+  it('Web Locks 待機中などに別タブで OFF に切り替わった場合でも、待機前に保持された古い再生コールバックが ref から最新の soundEnabled を参照して再生しない', () => {
+    const mockCtx = createMockAudioContext();
+    const vibrateMock = vi.fn(() => true);
+    Object.defineProperty(navigator, 'vibrate', {
+      configurable: true,
+      value: vibrateMock,
+    });
+
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useSoundEffect({
+          soundEnabled: enabled,
+          createAudioContext: () => mockCtx,
+        }),
+      { initialProps: { enabled: true } },
+    );
+
+    // 非同期ロック待機前に呼び出し元が保持していた関数参照をシミュレート
+    const stalePlaySupply = result.current.playSupply;
+    const stalePlayCrack = result.current.playCrack;
+    const stalePlayFanfare = result.current.playFanfare;
+    const stalePlayPass = result.current.playPass;
+    const stalePlayRecycle = result.current.playRecycle;
+    const stalePlaySound = result.current.playSound;
+    const staleUnlockAudio = result.current.unlockAudio;
+
+    // 待機中に別タブでミュートされ再レンダーが発生
+    rerender({ enabled: false });
+
+    // 古い関数参照をそのまま呼び出しても、ref 経由で最新の false を参照し一切再生・振動しないこと
+    expect(staleUnlockAudio()).toBe(false);
+    expect(stalePlaySupply()).toBe(false);
+    expect(stalePlayCrack(2)).toBe(false);
+    expect(stalePlayFanfare('SSR')).toBe(false);
+    expect(stalePlayPass()).toBe(false);
+    expect(stalePlayRecycle()).toBe(false);
+    expect(stalePlaySound('supply')).toBe(false);
+
+    expect(mockCtx.oscillators).toHaveLength(0);
+    expect(vibrateMock).not.toHaveBeenCalled();
   });
 
   it('AudioContext 未対応環境や navigator.vibrate 未対応環境（iOS Safari 等）でも例外が発生しない', () => {
