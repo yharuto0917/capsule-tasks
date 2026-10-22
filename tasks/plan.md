@@ -176,8 +176,8 @@ flowchart TD
   * カプセル投入音（ポコン＋コインチャリン音）、タップヒビ割れ音（パキッ）、カプセル開封音＆レア度別ファンファーレ、スワイプ先送り音、リサイクル破棄音の5種類を実装。
   * 対応端末での `navigator.vibrate` による微振動フィードバックと、`PlayerState.soundEnabled` によるミュート切り替えを統合。
 * **受け入れ条件（Acceptance Criteria）**：
-  * [ ] 外部音声アセット（mp3/wav）へのネットワークリクエストなしで全5種の効果音が再生されること。
-  * [ ] `soundEnabled: false` の場合に音声が出力されず、`AudioContext` 未対応環境でもエラーが発生しないこと。
+  * [x] 外部音声アセット（mp3/wav）へのネットワークリクエストなしで全5種の効果音が再生されること。
+  * [x] `soundEnabled: false` の場合に音声が出力されず、`AudioContext` 未対応環境でもエラーが発生しないこと。
 * **想定変更ファイル**：`src/client/lib/sound-synth.ts`, `src/client/hooks/use-sound-effect.ts`, `tests/use-sound-effect.test.ts`
 * **規模**：S（2〜3ファイル）
 

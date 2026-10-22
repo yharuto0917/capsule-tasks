@@ -3,6 +3,7 @@ import { Award, Hammer, PlusCircle, RefreshCw, Sparkles, Timer, Trash2, Zap } fr
 import { HeaderStatusBar } from './components/header-status-bar';
 import { ThreeCapsuleCanvas } from './components/three-capsule-canvas';
 import { useCapsuleStore } from './hooks/use-capsule-store';
+import { useSoundEffect } from './hooks/use-sound-effect';
 import type { CapsuleColor } from '../shared/schemas';
 
 const CAPSULE_BADGE_CONFIG: Record<
@@ -41,6 +42,10 @@ export const App: React.FC = () => {
     syncDateComboState,
   } = useCapsuleStore();
 
+  const { playSupply, playCrack, playFanfare, playPass, playRecycle, unlockAudio } = useSoundEffect(
+    playerState.soundEnabled,
+  );
+
   const [crackState, setCrackState] = useState<{ capsuleId: string | null; progress: number }>({
     capsuleId: null,
     progress: 0,
@@ -67,17 +72,20 @@ export const App: React.FC = () => {
 
   const handleTapCapsule = async () => {
     if (!activeCapsule || isUpdating) return;
+    unlockAudio();
     setInteractionTrigger((prev) => prev + 1);
     const nextProgress = crackProgress + 1;
     if (nextProgress >= 3) {
       setCrackState({ capsuleId: activeCapsule.id, progress: 0 });
       const result = await crackActiveCapsule(activeCapsule.id);
       if (result) {
+        playFanfare(result.awardedRarity);
         setStatusFeedback(
           `「${result.crackedTask.title}」を開封完了！＋${result.coinsEarned}コイン（${result.awardedRarity}メダル抽選）`,
         );
       }
     } else {
+      playCrack(nextProgress);
       setCrackState({ capsuleId: activeCapsule.id, progress: nextProgress });
       setStatusFeedback(`ヒビ割れ進行中 (${nextProgress}/3)... もう1回タップ！`);
     }
@@ -90,30 +98,38 @@ export const App: React.FC = () => {
       setStatusFeedback('筐体内のカプセルはこれ1個だけです');
       return;
     }
+    unlockAudio();
     setCrackState({ capsuleId: activeCapsule.id, progress: 0 });
     setInteractionTrigger((prev) => prev + 1);
-    await passActiveCapsule(activeCapsule.id);
+    const passed = await passActiveCapsule(activeCapsule.id);
+    if (!passed) return;
+    playPass();
     setStatusFeedback('ハンドルを回して次のカプセルを排出しました！');
   };
 
   const handleRecycleCapsule = async () => {
     if (!activeCapsule || isUpdating) return;
+    unlockAudio();
     setCrackState({ capsuleId: activeCapsule.id, progress: 0 });
     setInteractionTrigger((prev) => prev + 1);
     const recycled = await recycleActiveCapsule(activeCapsule.id);
     if (!recycled) return;
+    playRecycle();
     setStatusFeedback('リサイクル完了！＋5コインに変換しました');
   };
 
   const handleQuickSupply = async () => {
     if (isUpdating) return;
-    await supplyCapsules({
+    unlockAudio();
+    const supplied = await supplyCapsules({
       title: '机の上を5分だけ片付ける',
       capsuleColor: 'blue',
       rarityBoost: 1.0,
       medalPrompt:
         "A shining bronze commemorative medal featuring a sparkling tidy desk in high relief, engraved text 'DESK CLEANER' along the rim, 3D metallic render",
     });
+    if (supplied.length === 0) return;
+    playSupply();
     setInteractionTrigger((prev) => prev + 1);
     setStatusFeedback('カプセル補充ボーナス！＋10コイン獲得');
   };
