@@ -267,7 +267,7 @@ describe('CapsuleStage (FR-06, FR-07, FR-09, FR-10: 1カプセル表示・クラ
     expect(onCrack).not.toHaveBeenCalled();
   });
 
-  it('スワイプ移動量が閾値（60px）未満の場合はスナップバックし、onPass も onRecycle も発火しない', () => {
+  it('スワイプ移動量が閾値未満かつ低速な場合はスナップバックし、onPass も onRecycle も発火しない', () => {
     const onCrack = vi.fn();
     const onPass = vi.fn();
     const onRecycle = vi.fn();
@@ -286,13 +286,83 @@ describe('CapsuleStage (FR-06, FR-07, FR-09, FR-10: 1カプセル表示・クラ
     const capsuleBtn = screen.getByTestId('active-capsule-button');
 
     fireEvent.pointerDown(capsuleBtn, { pointerId: 1, clientX: 200, clientY: 200 });
-    fireEvent.pointerMove(capsuleBtn, { pointerId: 1, clientX: 170, clientY: 200 });
-    fireEvent.pointerUp(capsuleBtn, { pointerId: 1, clientX: 170, clientY: 200 });
+    fireEvent.pointerMove(capsuleBtn, { pointerId: 1, clientX: 185, clientY: 200 });
+    fireEvent.pointerUp(capsuleBtn, { pointerId: 1, clientX: 185, clientY: 200 });
     fireEvent.click(capsuleBtn);
 
     expect(onPass).not.toHaveBeenCalled();
     expect(onRecycle).not.toHaveBeenCalled();
     expect(onCrack).not.toHaveBeenCalled();
+  });
+
+  it('ドーム領域やタスク名スリップ上から横スワイプを開始し、要素外（window）で指を離してもスワイプ判定が成立する', () => {
+    const onPass = vi.fn();
+    const onRecycle = vi.fn();
+
+    render(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={false}
+        onCrack={vi.fn()}
+        onPass={onPass}
+        onRecycle={onRecycle}
+      />,
+    );
+
+    const titleSlip = screen.getByTestId('active-capsule-title');
+
+    // タスク名スリップ上でスワイプ開始し、window 上で移動・解放
+    fireEvent.pointerDown(titleSlip, { pointerId: 5, clientX: 220, clientY: 320 });
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 150, clientY: 322 });
+    fireEvent.pointerUp(window, { pointerId: 5, clientX: 150, clientY: 322 });
+
+    expect(onPass).toHaveBeenCalledTimes(1);
+    expect(onRecycle).not.toHaveBeenCalled();
+  });
+
+  it('TouchEvent（touchStart / touchMove / touchEnd）による横スワイプでも確実に先送り・破棄が判定される', () => {
+    const onPass = vi.fn();
+    const onRecycle = vi.fn();
+
+    render(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={false}
+        onCrack={vi.fn()}
+        onPass={onPass}
+        onRecycle={onRecycle}
+      />,
+    );
+
+    const stageDome = screen.getByTestId('capsule-stage-dome');
+
+    // 左タッチスワイプ -> onPass
+    fireEvent.touchStart(stageDome, {
+      touches: [{ identifier: 1, clientX: 240, clientY: 200 }],
+    });
+    fireEvent.touchMove(stageDome, {
+      touches: [{ identifier: 1, clientX: 170, clientY: 202 }],
+    });
+    fireEvent.touchEnd(stageDome, {
+      changedTouches: [{ identifier: 1, clientX: 170, clientY: 202 }],
+    });
+
+    expect(onPass).toHaveBeenCalledTimes(1);
+
+    // 右タッチスワイプ -> onRecycle
+    fireEvent.touchStart(stageDome, {
+      touches: [{ identifier: 2, clientX: 140, clientY: 200 }],
+    });
+    fireEvent.touchMove(stageDome, {
+      touches: [{ identifier: 2, clientX: 210, clientY: 202 }],
+    });
+    fireEvent.touchEnd(stageDome, {
+      changedTouches: [{ identifier: 2, clientX: 210, clientY: 202 }],
+    });
+
+    expect(onRecycle).toHaveBeenCalledTimes(1);
   });
 
   it('activeCapsule が別のカプセルに切り替わった際、およびパスで巡回して再排出された際にクラック段階が 0/3 にリセットされる', () => {

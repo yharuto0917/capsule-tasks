@@ -29,10 +29,17 @@ export interface CapsuleStageProps {
   toastNotification?: StageToastNotification | null;
 }
 
-const SWIPE_DRAG_SLOP_PX = 10;
-const SWIPE_COMMIT_THRESHOLD_PX = 60;
-const LONG_PRESS_STEP_1_MS = 330;
-const LONG_PRESS_STEP_2_MS = 660;
+/** ドラッグ開始とみなす最小移動量（px） */
+const SWIPE_DRAG_SLOP_PX = 6;
+/** 通常のドラッグ距離によるスワイプ確定閾値（px） */
+const SWIPE_COMMIT_THRESHOLD_PX = 40;
+/** 素早いフリック時の最小距離閾値（px） */
+const SWIPE_FLICK_MIN_DISTANCE_PX = 24;
+/** 素早いフリック時の速度閾値（px/ms） */
+const SWIPE_FLICK_VELOCITY_PX_PER_MS = 0.3;
+
+const LONG_PRESS_STEP_1_MS = 340;
+const LONG_PRESS_STEP_2_MS = 670;
 const LONG_PRESS_COMPLETE_MS = 1000;
 
 const CAPSULE_BADGE_CONFIG: Record<
@@ -112,19 +119,46 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
   const isLockedForCapsuleKeyRef = useRef<string | null>(null);
   const suppressNextClickRef = useRef<boolean>(false);
   const longPressTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const pointerStateRef = useRef<{
-    pointerId: number | null;
+
+  const gestureRef = useRef<{
+    active: boolean;
+    inputType: 'pointer' | 'touch' | null;
+    identifier: number | null;
+    capsuleKey: string | null;
     startX: number;
     startY: number;
-    deltaX: number;
+    lastX: number;
+    startTimeMs: number;
     isDragging: boolean;
   }>({
-    pointerId: null,
+    active: false,
+    inputType: null,
+    identifier: null,
+    capsuleKey: null,
     startX: 0,
     startY: 0,
-    deltaX: 0,
+    lastX: 0,
+    startTimeMs: 0,
     isDragging: false,
   });
+
+  const latestCallbacksRef = useRef({
+    activeCapsule,
+    activeCapsuleKey,
+    isUpdating,
+    onPass,
+    onRecycle,
+  });
+
+  useEffect(() => {
+    latestCallbacksRef.current = {
+      activeCapsule,
+      activeCapsuleKey,
+      isUpdating,
+      onPass,
+      onRecycle,
+    };
+  }, [activeCapsule, activeCapsuleKey, isUpdating, onPass, onRecycle]);
 
   const clearLongPressTimers = useCallback(() => {
     for (const timerId of longPressTimersRef.current) {
@@ -139,11 +173,15 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     crackStateRef.current = { capsuleKey: activeCapsuleKey, progress: 0 };
     isLockedForCapsuleKeyRef.current = null;
     suppressNextClickRef.current = false;
-    pointerStateRef.current = {
-      pointerId: null,
+    gestureRef.current = {
+      active: false,
+      inputType: null,
+      identifier: null,
+      capsuleKey: null,
       startX: 0,
       startY: 0,
-      deltaX: 0,
+      lastX: 0,
+      startTimeMs: 0,
       isDragging: false,
     };
     return () => {
@@ -195,7 +233,157 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     [onCrackStep, triggerCompleteCrack],
   );
 
-  const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+  const updateGestureMove = useCallback(
+    (clientX: number, clientY: number) => {
+      const g = gestureRef.current;
+      if (!g.active || !g.capsuleKey) return;
+
+      const dx = clientX - g.startX;
+      const dy = clientY - g.startY;
+      g.lastX = clientX;
+
+      if (!g.isDragging) {
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+        const distance = Math.hypot(dx, dy);
+        if (absDx > SWIPE_DRAG_SLOP_PX || distance > SWIPE_DRAG_SLOP_PX * 1.5) {
+          g.isDragging = true;
+          suppressNextClickRef.current = true;
+          clearLongPressTimers();
+          // 縦移動よりも横移動が小さい場合でも長押しは解除する
+          if (absDy > absDx * 2 && absDx < SWIPE_DRAG_SLOP_PX) {
+            return;
+          }
+        }
+      }
+
+      if (g.isDragging) {
+        const targetKey = g.capsuleKey;
+        const clampedOffset = Math.max(-130, Math.min(130, dx));
+        setInteractionState((prev) => ({
+          capsuleKey: targetKey,
+          progress: prev.capsuleKey === targetKey ? prev.progress : 0,
+          dragOffsetX: clampedOffset,
+          isPressing: false,
+        }));
+      }
+    },
+    [clearLongPressTimers],
+  );
+
+  const completeGesture = useCallback(
+    (endClientX: number | null, cancelled: boolean) => {
+      const g = gestureRef.current;
+      if (!g.active) return;
+
+      clearLongPressTimers();
+
+      const wasDragging = g.isDragging;
+      const resolvedEndX =
+        typeof endClientX === 'number' && Number.isFinite(endClientX) ? endClientX : g.lastX;
+      const finalDeltaX = resolvedEndX - g.startX;
+      const elapsedMs = Math.max(1, Date.now() - g.startTimeMs);
+      const velocityX = finalDeltaX / elapsedMs;
+      const targetKey = g.capsuleKey;
+
+      gestureRef.current = {
+        active: false,
+        inputType: null,
+        identifier: null,
+        capsuleKey: null,
+        startX: 0,
+        startY: 0,
+        lastX: 0,
+        startTimeMs: 0,
+        isDragging: false,
+      };
+
+      if (targetKey) {
+        setInteractionState((prev) => ({
+          capsuleKey: targetKey,
+          progress: prev.capsuleKey === targetKey ? prev.progress : 0,
+          dragOffsetX: 0,
+          isPressing: false,
+        }));
+      }
+
+      const {
+        activeCapsule: currentCapsule,
+        activeCapsuleKey: currentKey,
+        isUpdating: currentlyUpdating,
+        onPass: passFn,
+        onRecycle: recycleFn,
+      } = latestCallbacksRef.current;
+
+      if (cancelled || !currentCapsule || !currentKey || currentlyUpdating) {
+        return;
+      }
+
+      if (wasDragging) {
+        suppressNextClickRef.current = true;
+        const isLeftCommit =
+          finalDeltaX <= -SWIPE_COMMIT_THRESHOLD_PX ||
+          (finalDeltaX <= -SWIPE_FLICK_MIN_DISTANCE_PX &&
+            velocityX <= -SWIPE_FLICK_VELOCITY_PX_PER_MS);
+        const isRightCommit =
+          finalDeltaX >= SWIPE_COMMIT_THRESHOLD_PX ||
+          (finalDeltaX >= SWIPE_FLICK_MIN_DISTANCE_PX &&
+            velocityX >= SWIPE_FLICK_VELOCITY_PX_PER_MS);
+
+        if (isLeftCommit) {
+          setLocalTrigger((prev) => prev + 1);
+          void passFn();
+        } else if (isRightCommit) {
+          setLocalTrigger((prev) => prev + 1);
+          void recycleFn();
+        }
+      }
+    },
+    [clearLongPressTimers],
+  );
+
+  // 要素外（画面端・ボタン外）で指やマウスを動かした/離した場合でも確実に追跡するための window リスナー
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleWindowPointerMove = (event: PointerEvent) => {
+      const g = gestureRef.current;
+      if (!g.active || g.inputType !== 'pointer') return;
+      if (g.identifier !== null && event.pointerId !== g.identifier) return;
+      updateGestureMove(event.clientX, event.clientY);
+    };
+
+    const handleWindowPointerUp = (event: PointerEvent) => {
+      const g = gestureRef.current;
+      if (!g.active || g.inputType !== 'pointer') return;
+      if (g.identifier !== null && event.pointerId !== g.identifier) return;
+      completeGesture(event.clientX, false);
+    };
+
+    const handleWindowPointerCancel = (event: PointerEvent) => {
+      const g = gestureRef.current;
+      if (!g.active || g.inputType !== 'pointer') return;
+      if (g.identifier !== null && event.pointerId !== g.identifier) return;
+      completeGesture(null, true);
+    };
+
+    window.addEventListener('pointermove', handleWindowPointerMove);
+    window.addEventListener('pointerup', handleWindowPointerUp);
+    window.addEventListener('pointercancel', handleWindowPointerCancel);
+    return () => {
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      window.removeEventListener('pointerup', handleWindowPointerUp);
+      window.removeEventListener('pointercancel', handleWindowPointerCancel);
+    };
+  }, [completeGesture, updateGestureMove]);
+
+  const startGesture = (
+    inputType: 'pointer' | 'touch',
+    identifier: number,
+    clientX: number,
+    clientY: number,
+    enableLongPress: boolean,
+  ) => {
     if (
       !activeCapsule ||
       !activeCapsuleKey ||
@@ -204,39 +392,40 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     ) {
       return;
     }
-    if (pointerStateRef.current.pointerId !== null) {
+    if (gestureRef.current.active) {
       return;
     }
 
     const targetKey = activeCapsuleKey;
-    pointerStateRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      deltaX: 0,
+    gestureRef.current = {
+      active: true,
+      inputType,
+      identifier,
+      capsuleKey: targetKey,
+      startX: clientX,
+      startY: clientY,
+      lastX: clientX,
+      startTimeMs: Date.now(),
       isDragging: false,
     };
     suppressNextClickRef.current = false;
+
     setInteractionState((prev) => ({
       capsuleKey: targetKey,
       progress: prev.capsuleKey === targetKey ? prev.progress : 0,
       dragOffsetX: 0,
-      isPressing: true,
+      isPressing: enableLongPress,
     }));
-
-    if (typeof event.currentTarget.setPointerCapture === 'function') {
-      try {
-        event.currentTarget.setPointerCapture(event.pointerId);
-      } catch {
-        // JSDOM 等で setPointerCapture が未実装の場合でも安全に続行
-      }
-    }
 
     clearLongPressTimers();
 
-    // 1秒長押し（330ms -> Stage 1, 660ms -> Stage 2, 1000ms -> 開封完了）
+    if (!enableLongPress) {
+      return;
+    }
+
+    // 1秒長押し（340ms -> Stage 1, 670ms -> Stage 2, 1000ms -> 開封完了）
     const timer1 = setTimeout(() => {
-      if (pointerStateRef.current.isDragging) return;
+      if (!gestureRef.current.active || gestureRef.current.isDragging) return;
       suppressNextClickRef.current = true;
       const current =
         crackStateRef.current.capsuleKey === targetKey ? crackStateRef.current.progress : 0;
@@ -246,7 +435,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     }, LONG_PRESS_STEP_1_MS);
 
     const timer2 = setTimeout(() => {
-      if (pointerStateRef.current.isDragging) return;
+      if (!gestureRef.current.active || gestureRef.current.isDragging) return;
       suppressNextClickRef.current = true;
       const current =
         crackStateRef.current.capsuleKey === targetKey ? crackStateRef.current.progress : 0;
@@ -256,7 +445,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     }, LONG_PRESS_STEP_2_MS);
 
     const timer3 = setTimeout(() => {
-      if (pointerStateRef.current.isDragging) return;
+      if (!gestureRef.current.active || gestureRef.current.isDragging) return;
       suppressNextClickRef.current = true;
       triggerCompleteCrack(targetKey);
     }, LONG_PRESS_COMPLETE_MS);
@@ -264,89 +453,71 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     longPressTimersRef.current = [timer1, timer2, timer3];
   };
 
-  const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
-    const state = pointerStateRef.current;
-    if (!activeCapsuleKey || state.pointerId === null || state.pointerId !== event.pointerId) {
-      return;
+  const handleStagePointerDown = (event: React.PointerEvent<HTMLElement>) => {
+    const isCapsuleButton =
+      event.target instanceof Element &&
+      Boolean(event.target.closest('[data-testid="active-capsule-button"]'));
+
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // JSDOM 等で setPointerCapture が未実装の場合でも安全に続行
+      }
     }
 
-    const targetKey = activeCapsuleKey;
-    const dx = event.clientX - state.startX;
-    const dy = event.clientY - state.startY;
-    const distance = Math.hypot(dx, dy);
-
-    if (!state.isDragging && distance > SWIPE_DRAG_SLOP_PX) {
-      state.isDragging = true;
-      suppressNextClickRef.current = true;
-      clearLongPressTimers();
-    }
-
-    if (state.isDragging) {
-      state.deltaX = dx;
-      const clampedOffset = Math.max(-110, Math.min(110, dx));
-      setInteractionState((prev) => ({
-        capsuleKey: targetKey,
-        progress: prev.capsuleKey === targetKey ? prev.progress : 0,
-        dragOffsetX: clampedOffset,
-        isPressing: false,
-      }));
-    }
+    startGesture('pointer', event.pointerId, event.clientX, event.clientY, isCapsuleButton);
   };
 
-  const finishPointerInteraction = (
-    event: React.PointerEvent<HTMLButtonElement>,
-    cancelled: boolean,
-  ) => {
-    const state = pointerStateRef.current;
-    if (state.pointerId !== null && state.pointerId !== event.pointerId) {
-      return;
-    }
+  const handleStagePointerMove = (event: React.PointerEvent<HTMLElement>) => {
+    const g = gestureRef.current;
+    if (!g.active || g.inputType !== 'pointer') return;
+    if (g.identifier !== null && event.pointerId !== g.identifier) return;
+    updateGestureMove(event.clientX, event.clientY);
+  };
+
+  const handleStagePointerUp = (event: React.PointerEvent<HTMLElement>, cancelled: boolean) => {
+    const g = gestureRef.current;
+    if (!g.active || g.inputType !== 'pointer') return;
+    if (g.identifier !== null && event.pointerId !== g.identifier) return;
 
     if (typeof event.currentTarget.releasePointerCapture === 'function') {
       try {
         event.currentTarget.releasePointerCapture(event.pointerId);
       } catch {
-        // ポインタキャプチャ未保持またはJSDOM環境でも安全に続行
+        // 安全に無視
       }
     }
 
-    clearLongPressTimers();
+    completeGesture(event.clientX, cancelled);
+  };
 
-    const wasDragging = state.isDragging;
-    const finalDeltaX = event.clientX - state.startX || state.deltaX;
+  const handleStageTouchStart = (event: React.TouchEvent<HTMLElement>) => {
+    if (gestureRef.current.active) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    const isCapsuleButton =
+      event.target instanceof Element &&
+      Boolean(event.target.closest('[data-testid="active-capsule-button"]'));
+    startGesture('touch', touch.identifier, touch.clientX, touch.clientY, isCapsuleButton);
+  };
 
-    pointerStateRef.current = {
-      pointerId: null,
-      startX: 0,
-      startY: 0,
-      deltaX: 0,
-      isDragging: false,
-    };
+  const handleStageTouchMove = (event: React.TouchEvent<HTMLElement>) => {
+    const g = gestureRef.current;
+    if (!g.active || g.inputType !== 'touch') return;
+    const touch =
+      Array.from(event.touches).find((t) => t.identifier === g.identifier) ?? event.touches[0];
+    if (!touch) return;
+    updateGestureMove(touch.clientX, touch.clientY);
+  };
 
-    if (activeCapsuleKey) {
-      const targetKey = activeCapsuleKey;
-      setInteractionState((prev) => ({
-        capsuleKey: targetKey,
-        progress: prev.capsuleKey === targetKey ? prev.progress : 0,
-        dragOffsetX: 0,
-        isPressing: false,
-      }));
-    }
-
-    if (cancelled || !activeCapsule || !activeCapsuleKey || isUpdating) {
-      return;
-    }
-
-    if (wasDragging) {
-      suppressNextClickRef.current = true;
-      if (finalDeltaX <= -SWIPE_COMMIT_THRESHOLD_PX) {
-        setLocalTrigger((prev) => prev + 1);
-        void onPass();
-      } else if (finalDeltaX >= SWIPE_COMMIT_THRESHOLD_PX) {
-        setLocalTrigger((prev) => prev + 1);
-        void onRecycle();
-      }
-    }
+  const handleStageTouchEnd = (event: React.TouchEvent<HTMLElement>, cancelled: boolean) => {
+    const g = gestureRef.current;
+    if (!g.active || g.inputType !== 'touch') return;
+    const touch =
+      Array.from(event.changedTouches).find((t) => t.identifier === g.identifier) ??
+      event.changedTouches[0];
+    completeGesture(touch ? touch.clientX : null, cancelled);
   };
 
   const handleClick = () => {
@@ -366,11 +537,23 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     : CAPSULE_BADGE_CONFIG.blue;
 
   const combinedTrigger = externalInteractionTrigger + localTrigger;
-  const isSwipingLeft = dragOffsetX <= -24;
-  const isSwipingRight = dragOffsetX >= 24;
+  const isSwipingLeft = dragOffsetX <= -20;
+  const isSwipingRight = dragOffsetX >= 20;
+  const isActivelyDragging = dragOffsetX !== 0;
 
   return (
-    <div className="toy-acrylic-dome relative flex flex-1 flex-col items-center justify-between w-full my-1.5 rounded-[32px] p-3 min-h-0 overflow-hidden">
+    <div
+      data-testid="capsule-stage-dome"
+      onPointerDown={handleStagePointerDown}
+      onPointerMove={handleStagePointerMove}
+      onPointerUp={(e) => handleStagePointerUp(e, false)}
+      onPointerCancel={(e) => handleStagePointerUp(e, true)}
+      onTouchStart={handleStageTouchStart}
+      onTouchMove={handleStageTouchMove}
+      onTouchEnd={(e) => handleStageTouchEnd(e, false)}
+      onTouchCancel={(e) => handleStageTouchEnd(e, true)}
+      className="toy-acrylic-dome relative flex flex-1 flex-col items-center justify-between w-full my-1.5 rounded-[32px] p-3 min-h-0 overflow-hidden touch-none select-none"
+    >
       {/* アクリルドームの左上ハイライト反射 */}
       <div
         aria-hidden="true"
@@ -451,7 +634,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
               }`}
             >
               <RefreshCw className="h-2.5 w-2.5" />
-              <span>{remainingCount > 1 ? '← パス' : '← 残1個'}</span>
+              <span>{remainingCount > 1 ? '← 左スワイプ: パス' : '← 残1個'}</span>
             </span>
 
             <span
@@ -461,7 +644,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
                   : 'bg-white/75 text-[#065F46]'
               }`}
             >
-              <span>破棄(+5) →</span>
+              <span>右スワイプ: 破棄(+5) →</span>
               <Trash2 className="h-2.5 w-2.5" />
             </span>
           </div>
@@ -470,20 +653,18 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
           <button
             type="button"
             onClick={handleClick}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={(e) => finishPointerInteraction(e, false)}
-            onPointerCancel={(e) => finishPointerInteraction(e, true)}
             onContextMenu={(e) => e.preventDefault()}
             disabled={isUpdating}
             data-testid="active-capsule-button"
             aria-label={`現在のカプセルタスク: ${activeCapsule.title}。タップ連打または1秒長押しで開封、左スワイプでパス、右スワイプでリサイクル`}
             style={{
-              transform: `translateX(${dragOffsetX}px) rotate(${dragOffsetX * 0.12}deg) scale(${
+              transform: `translateX(${dragOffsetX}px) rotate(${dragOffsetX * 0.14}deg) scale(${
                 isPressing ? 0.96 : 1
               })`,
             }}
-            className="group relative z-10 my-auto flex flex-col items-center justify-center focus:outline-none cursor-pointer touch-none select-none transition-transform duration-100"
+            className={`group relative z-10 my-auto flex flex-col items-center justify-center focus:outline-none cursor-grab active:cursor-grabbing touch-none select-none ${
+              isActivelyDragging ? 'transition-none' : 'transition-transform duration-150'
+            }`}
           >
             {/* 3D風グラデーション＆光沢シェル背景（Three.jsキャンバスの背面ハロー＆フォールバック立体表現） */}
             <div
@@ -588,8 +769,15 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
             </svg>
           </button>
 
-          {/* 下部：カプセル同梱ミニブック風タスク名スリップ */}
-          <div className="relative z-10 w-full rounded-2xl bg-[#FFFDF9] border-3 border-[#1E1B18] px-3.5 py-2 shadow-[0_4px_0_#1E1B18]">
+          {/* 下部：カプセル同梱ミニブック風タスク名スリップ（スワイプ連動で少し追従） */}
+          <div
+            style={{
+              transform: `translateX(${dragOffsetX * 0.35}px)`,
+            }}
+            className={`relative z-10 w-full rounded-2xl bg-[#FFFDF9] border-3 border-[#1E1B18] px-3.5 py-2 shadow-[0_4px_0_#1E1B18] ${
+              isActivelyDragging ? 'transition-none' : 'transition-transform duration-150'
+            }`}
+          >
             <p
               data-testid="active-capsule-title"
               className="font-toy text-center text-sm sm:text-base font-normal leading-snug text-[#1E1B18] line-clamp-2"
@@ -599,13 +787,17 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
             <div className="mt-1 flex items-center justify-center gap-1.5 text-[11px] font-black text-[#B45309]">
               <Hammer className="h-3.5 w-3.5 stroke-[2.5]" aria-hidden="true" />
               <span>
-                {isPressing
-                  ? '長押しチャージ中... そのままホールドで開封！'
-                  : crackProgress >= 3
-                    ? 'パカッ！カプセル開封！'
-                    : crackProgress === 0
-                      ? 'タップ連打 または 1秒長押しで割る！'
-                      : `ヒビ割れ ${crackProgress}/3（あと ${3 - crackProgress} 回タップ）`}
+                {isSwipingLeft
+                  ? '指を離すと「パス（あとで回す）」！'
+                  : isSwipingRight
+                    ? '指を離すと「リサイクル破棄（＋5コイン）」！'
+                    : isPressing
+                      ? '長押しチャージ中... そのままホールドで開封！'
+                      : crackProgress >= 3
+                        ? 'パカッ！カプセル開封！'
+                        : crackProgress === 0
+                          ? 'タップ連打 または 1秒長押しで割る！'
+                          : `ヒビ割れ ${crackProgress}/3（あと ${3 - crackProgress} 回タップ）`}
               </span>
             </div>
           </div>

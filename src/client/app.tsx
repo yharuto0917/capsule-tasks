@@ -5,6 +5,31 @@ import { CapsuleStage, type StageToastNotification } from './components/capsule-
 import { HeaderStatusBar } from './components/header-status-bar';
 import { useCapsuleStore } from './hooks/use-capsule-store';
 import { useSoundEffect } from './hooks/use-sound-effect';
+import type { ExtractedCapsuleTaskDraft } from '../shared/schemas';
+
+const QUICK_SUPPLY_PRESETS: ExtractedCapsuleTaskDraft[] = [
+  {
+    title: '机の上を5分だけ片付ける',
+    capsuleColor: 'blue',
+    rarityBoost: 1.0,
+    medalPrompt:
+      "A shining bronze commemorative medal featuring a sparkling tidy desk in high relief, engraved text 'DESK CLEANER' along the rim, 3D metallic render",
+  },
+  {
+    title: '未読メールを3通だけ返信する',
+    capsuleColor: 'red',
+    rarityBoost: 1.5,
+    medalPrompt:
+      "A polished silver commemorative medal featuring a flying envelope and lightning bolt in high relief, engraved text 'MAIL RESPONDER' along the rim, 3D metallic render",
+  },
+  {
+    title: '明日の優先タスクをメモに書き出す',
+    capsuleColor: 'gold',
+    rarityBoost: 2.0,
+    medalPrompt:
+      "A gleaming golden commemorative medal featuring a compass and star chart in high relief, engraved text 'VISION PLANNER' along the rim, 3D metallic render",
+  },
+];
 
 export const App: React.FC = () => {
   const {
@@ -30,6 +55,7 @@ export const App: React.FC = () => {
     useState<string>('カプセルを連打・長押ししてパカッと開封しよう！');
   const [toastNotification, setToastNotification] = useState<StageToastNotification | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quickSupplyIndexRef = useRef<number>(0);
 
   const showToast = (notification: StageToastNotification) => {
     if (toastTimerRef.current) {
@@ -123,13 +149,9 @@ export const App: React.FC = () => {
   const handleQuickSupply = async () => {
     if (isUpdating) return;
     unlockAudio();
-    const supplied = await supplyCapsules({
-      title: '机の上を5分だけ片付ける',
-      capsuleColor: 'blue',
-      rarityBoost: 1.0,
-      medalPrompt:
-        "A shining bronze commemorative medal featuring a sparkling tidy desk in high relief, engraved text 'DESK CLEANER' along the rim, 3D metallic render",
-    });
+    const preset = QUICK_SUPPLY_PRESETS[quickSupplyIndexRef.current % QUICK_SUPPLY_PRESETS.length];
+    quickSupplyIndexRef.current += 1;
+    const supplied = await supplyCapsules(preset);
     if (supplied.length === 0) return;
     playSupply();
     setInteractionTrigger((prev) => prev + 1);
