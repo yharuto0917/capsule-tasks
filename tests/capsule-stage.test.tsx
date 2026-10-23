@@ -242,6 +242,99 @@ describe('CapsuleStage (FR-06, FR-07, FR-09, FR-10: 1カプセル表示・クラ
     expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '1');
   });
 
+  it('Stage 3演出終了時に別更新（isUpdating=true）がロック待ちでも空振りせず、更新完了後に自動的にonCrackを再試行する', () => {
+    vi.useFakeTimers();
+    const onCrack = vi.fn();
+
+    const { rerender } = render(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={false}
+        onCrack={onCrack}
+        onPass={vi.fn()}
+        onRecycle={vi.fn()}
+      />,
+    );
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '3');
+
+    // Stage 3 演出中に補充やサウンド切替等で isUpdating=true になったケース
+    rerender(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={true}
+        onCrack={onCrack}
+        onPass={vi.fn()}
+        onRecycle={vi.fn()}
+      />,
+    );
+
+    // 260ms 経過時点では isUpdating=true のため保留され、空振りしない
+    act(() => {
+      vi.advanceTimersByTime(STAGE_3_OPEN_DURATION_MS);
+    });
+    expect(onCrack).not.toHaveBeenCalled();
+
+    // 別更新が完了して isUpdating=false に戻った瞬間に onCrack が自動再試行される
+    rerender(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={false}
+        onCrack={onCrack}
+        onPass={vi.fn()}
+        onRecycle={vi.fn()}
+      />,
+    );
+    expect(onCrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('長押しで3/3到達後、Stage 3演出の260ms以内に右スワイプや左スワイプしても破棄やパスに変わらない', () => {
+    vi.useFakeTimers();
+    const onCrack = vi.fn();
+    const onPass = vi.fn();
+    const onRecycle = vi.fn();
+
+    render(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={false}
+        onCrack={onCrack}
+        onPass={onPass}
+        onRecycle={onRecycle}
+      />,
+    );
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+
+    // 1000ms 長押しで Stage 3（3/3）到達
+    fireEvent.pointerDown(capsuleBtn, { pointerId: 1, clientX: 150, clientY: 200 });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '3');
+
+    // 260ms 以内にそのまま右へスワイプして指を離しても onRecycle は発火しない
+    fireEvent.pointerMove(capsuleBtn, { pointerId: 1, clientX: 250, clientY: 200 });
+    fireEvent.pointerUp(capsuleBtn, { pointerId: 1, clientX: 250, clientY: 200 });
+    expect(onRecycle).not.toHaveBeenCalled();
+    expect(onPass).not.toHaveBeenCalled();
+
+    // 260ms 経過後に予定どおり onCrack のみが発火する
+    act(() => {
+      vi.advanceTimersByTime(STAGE_3_OPEN_DURATION_MS);
+    });
+    expect(onCrack).toHaveBeenCalledTimes(1);
+    expect(onRecycle).not.toHaveBeenCalled();
+  });
+
   it('長押しが1秒未満（200ms）で中断された場合は長押し開封完了が発火しない', () => {
     vi.useFakeTimers();
     const onCrack = vi.fn();
@@ -533,6 +626,12 @@ describe('App メイン画面統合操作 (開封・左スワイプ先送り・�
     expect(screen.getByTestId('active-capsule-title')).toHaveTextContent(
       '企画書ドラフトを提出する',
     );
+
+    // 開封確定後（Stage 3 演出中）はフッターのパス・破棄ボタンが抑止され、押しても破棄（+5コイン）に変わらない
+    expect(screen.getByTestId('action-pass-button')).toBeDisabled();
+    expect(screen.getByTestId('action-recycle-button')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('action-recycle-button'));
+    fireEvent.click(screen.getByTestId('action-pass-button'));
 
     await waitFor(() => expect(screen.getByTestId('status-coins')).toHaveTextContent('180'));
     expect(screen.getByTestId('status-combo')).toHaveTextContent('4');

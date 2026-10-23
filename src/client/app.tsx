@@ -51,11 +51,18 @@ export const App: React.FC = () => {
   );
 
   const [interactionTrigger, setInteractionTrigger] = useState<number>(0);
+  const [isOpeningCapsule, setIsOpeningCapsule] = useState<boolean>(false);
   const [statusFeedback, setStatusFeedback] =
     useState<string>('カプセルを連打・長押ししてパカッと開封しよう！');
   const [toastNotification, setToastNotification] = useState<StageToastNotification | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isOpeningCapsuleRef = useRef<boolean>(false);
   const quickSupplyIndexRef = useRef<number>(0);
+
+  const handleOpeningLockChange = (isOpening: boolean) => {
+    isOpeningCapsuleRef.current = isOpening;
+    setIsOpeningCapsule(isOpening);
+  };
 
   const showToast = (notification: StageToastNotification) => {
     if (toastTimerRef.current) {
@@ -98,7 +105,7 @@ export const App: React.FC = () => {
   };
 
   const handleCrackComplete = async () => {
-    if (!activeCapsule || isUpdating) return;
+    if (!activeCapsule) return;
     unlockAudio();
     const result = await crackActiveCapsule(activeCapsule.id);
     if (result) {
@@ -114,7 +121,7 @@ export const App: React.FC = () => {
   };
 
   const handlePassCapsule = async () => {
-    if (!activeCapsule || isUpdating) return;
+    if (!activeCapsule || isUpdating || isOpeningCapsuleRef.current) return;
     if (capsules.length <= 1) {
       setInteractionTrigger((prev) => prev + 1);
       setStatusFeedback('筐体内のカプセルはこれ1個だけです');
@@ -133,7 +140,7 @@ export const App: React.FC = () => {
   };
 
   const handleRecycleCapsule = async () => {
-    if (!activeCapsule || isUpdating) return;
+    if (!activeCapsule || isUpdating || isOpeningCapsuleRef.current) return;
     unlockAudio();
     setInteractionTrigger((prev) => prev + 1);
     const recycled = await recycleActiveCapsule(activeCapsule.id);
@@ -209,6 +216,7 @@ export const App: React.FC = () => {
             onRecycle={handleRecycleCapsule}
             externalInteractionTrigger={interactionTrigger}
             toastNotification={toastNotification}
+            onOpeningLockChange={handleOpeningLockChange}
           />
 
           {/* 筐体ステータスインジケーターバー */}
@@ -233,7 +241,7 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={handlePassCapsule}
-              disabled={!activeCapsule || isUpdating}
+              disabled={!activeCapsule || isUpdating || isOpeningCapsule}
               data-testid="action-pass-button"
               className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl bg-[#7DD3FC] py-2 px-2 text-xs font-black text-[#1E1B18] disabled:opacity-45 cursor-pointer"
             >
@@ -244,7 +252,7 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={() => setStatusFeedback('放置オート開封タイマー（5/15/25分）をセット可能')}
-              disabled={!activeCapsule || isUpdating}
+              disabled={!activeCapsule || isUpdating || isOpeningCapsule}
               data-testid="action-timer-button"
               className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl bg-[#FFF8EC] py-2 px-2 text-xs font-black text-[#1E1B18] disabled:opacity-45 cursor-pointer"
             >
@@ -258,7 +266,7 @@ export const App: React.FC = () => {
             <button
               type="button"
               onClick={handleRecycleCapsule}
-              disabled={!activeCapsule || isUpdating}
+              disabled={!activeCapsule || isUpdating || isOpeningCapsule}
               data-testid="action-recycle-button"
               className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl bg-[#6EE7B7] py-2 px-2 text-xs font-black text-[#1E1B18] disabled:opacity-45 cursor-pointer"
             >
