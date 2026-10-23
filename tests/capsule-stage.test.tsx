@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/client/app';
 import { CapsuleMachineVisual } from '../src/client/components/capsule-machine-visual';
-import { CapsuleStage } from '../src/client/components/capsule-stage';
+import { CapsuleStage, STAGE_3_OPEN_DURATION_MS } from '../src/client/components/capsule-stage';
 import { DEFAULT_INITIAL_CAPSULE_TASKS, type CapsuleTask } from '../src/shared/schemas';
 
 beforeEach(() => {
@@ -121,7 +121,7 @@ describe('CapsuleStage (FR-06, FR-07, FR-09, FR-10: 1カプセル表示・クラ
     expect(onCrack).toHaveBeenCalledTimes(1);
   });
 
-  it('実機ブラウザのポインタータップ（pointerDown -> pointerUp -> click）でも二重進行せず確実に1段階ずつ割れる', () => {
+  it('実機ブラウザのポインタータップ（pointerDown -> pointerUp -> click）でも二重進行せず確実に1段階ずつ割れる', async () => {
     const onCrack = vi.fn();
     const onCrackStep = vi.fn();
 
@@ -156,20 +156,21 @@ describe('CapsuleStage (FR-06, FR-07, FR-09, FR-10: 1カプセル表示・クラ
     expect(onCrackStep).toHaveBeenCalledTimes(2);
     expect(onCrackStep).toHaveBeenLastCalledWith(2);
 
-    // 3回目: ポインタータップで開封完了
+    // 3回目: ポインタータップで Stage 3 がまず描画され、開封演出後に onCrack が発火
     fireEvent.pointerDown(canvas, { pointerId: 3, clientX: 200, clientY: 200 });
     fireEvent.pointerUp(canvas, { pointerId: 3, clientX: 200, clientY: 200 });
     fireEvent.click(canvas);
     expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '3');
-    expect(onCrack).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('crack-layer-3')).toBeInTheDocument();
+    await waitFor(() => expect(onCrack).toHaveBeenCalledTimes(1));
   });
 
-  it('1秒長押し（1000msホールド）で段階的にヒビが入り、自動的に開封完了が発火して直後のclickで二重発火しない', () => {
+  it('1秒長押し（1000msホールド）で段階的にヒビが入り、Stage 3演出完了後に開封完了が発火して次カプセル切り替え後の指離しでも1/3進まない', () => {
     vi.useFakeTimers();
     const onCrack = vi.fn();
     const onCrackStep = vi.fn();
 
-    render(
+    const { rerender } = render(
       <CapsuleStage
         activeCapsule={sampleGoldTask}
         remainingCount={3}
@@ -202,18 +203,43 @@ describe('CapsuleStage (FR-06, FR-07, FR-09, FR-10: 1カプセル表示・クラ
     expect(onCrackStep).toHaveBeenCalledWith(2);
     expect(onCrack).not.toHaveBeenCalled();
 
-    // 1000ms到達: Stage 3 になって開封完了が発火
+    // 1000ms到達: まず Stage 3 演出が描画され、演出時間中はまだ次カプセルへ切り替わらない
     act(() => {
       vi.advanceTimersByTime(350);
     });
     expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '3');
     expect(screen.getByTestId('crack-layer-3')).toBeInTheDocument();
+    expect(onCrack).not.toHaveBeenCalled();
+
+    // Stage 3 の開封演出が完了すると onCrack が発火
+    act(() => {
+      vi.advanceTimersByTime(STAGE_3_OPEN_DURATION_MS);
+    });
     expect(onCrack).toHaveBeenCalledTimes(1);
 
-    // 長押し完了後に指を離して合成clickが発生しても二重発火しない
-    fireEvent.pointerUp(capsuleBtn, { pointerId: 1, clientX: 200, clientY: 200 });
-    fireEvent.click(capsuleBtn);
+    // 次のカプセルへ切り替わった後にユーザーがようやく指を離し（pointerUp -> 合成 click）、
+    // 次のカプセルが誤って 1/3 に進まず 0/3 のまま維持されること
+    rerender(
+      <CapsuleStage
+        activeCapsule={sampleBlueTask}
+        remainingCount={2}
+        isUpdating={false}
+        onCrack={onCrack}
+        onCrackStep={onCrackStep}
+        onPass={vi.fn()}
+        onRecycle={vi.fn()}
+      />,
+    );
+    const nextCapsuleBtn = screen.getByTestId('active-capsule-button');
+    fireEvent.pointerUp(nextCapsuleBtn, { pointerId: 1, clientX: 200, clientY: 200 });
+    fireEvent.click(nextCapsuleBtn);
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '0');
+    expect(onCrackStep).toHaveBeenCalledTimes(2);
     expect(onCrack).toHaveBeenCalledTimes(1);
+
+    // その後あらためて次カプセルをタップすると通常どおり 1/3 へ進むこと
+    fireEvent.click(nextCapsuleBtn);
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '1');
   });
 
   it('長押しが1秒未満（200ms）で中断された場合は長押し開封完了が発火しない', () => {
@@ -500,6 +526,13 @@ describe('App メイン画面統合操作 (開封・左スワイプ先送り・�
     fireEvent.click(capsuleBtn);
     fireEvent.click(capsuleBtn);
     fireEvent.click(capsuleBtn);
+
+    // Web Locks 非対応でストアが即時更新される環境でも、まず Stage 3（3/3 開封演出）が確実に描画される
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '3');
+    expect(screen.getByTestId('crack-layer-3')).toBeInTheDocument();
+    expect(screen.getByTestId('active-capsule-title')).toHaveTextContent(
+      '企画書ドラフトを提出する',
+    );
 
     await waitFor(() => expect(screen.getByTestId('status-coins')).toHaveTextContent('180'));
     expect(screen.getByTestId('status-combo')).toHaveTextContent('4');

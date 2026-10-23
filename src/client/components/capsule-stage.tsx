@@ -41,6 +41,8 @@ const SWIPE_FLICK_VELOCITY_PX_PER_MS = 0.3;
 const LONG_PRESS_STEP_1_MS = 340;
 const LONG_PRESS_STEP_2_MS = 670;
 const LONG_PRESS_COMPLETE_MS = 1000;
+/** Stage 3（3/3 開封完了エフェクト・3D上蓋オープン）を描画維持してから次カプセルへ遷移する演出時間（ms） */
+export const STAGE_3_OPEN_DURATION_MS = 260;
 
 const CAPSULE_BADGE_CONFIG: Record<
   CapsuleColor,
@@ -115,6 +117,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
   const isLockedForCapsuleKeyRef = useRef<string | null>(null);
   const suppressNextClickRef = useRef<boolean>(false);
   const longPressTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const stage3OpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const gestureRef = useRef<{
     active: boolean;
@@ -142,6 +145,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     activeCapsule,
     activeCapsuleKey,
     isUpdating,
+    onCrack,
     onPass,
     onRecycle,
   });
@@ -151,10 +155,11 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
       activeCapsule,
       activeCapsuleKey,
       isUpdating,
+      onCrack,
       onPass,
       onRecycle,
     };
-  }, [activeCapsule, activeCapsuleKey, isUpdating, onPass, onRecycle]);
+  }, [activeCapsule, activeCapsuleKey, isUpdating, onCrack, onPass, onRecycle]);
 
   const clearLongPressTimers = useCallback(() => {
     for (const timerId of longPressTimersRef.current) {
@@ -163,34 +168,35 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     longPressTimersRef.current = [];
   }, []);
 
-  // カプセル切り替え時（またはパス巡回時）・アンマウント時にタイマー・ドラッグ状態・ロックをクリーンアップ
-  // 注意: suppressNextClickRef は長押し開封やスワイプ直後の合成 click が次カプセルへ誤発火するのを防ぐためここではリセットしない
+  const clearStage3OpenTimer = useCallback(() => {
+    if (stage3OpenTimerRef.current !== null) {
+      clearTimeout(stage3OpenTimerRef.current);
+      stage3OpenTimerRef.current = null;
+    }
+  }, []);
+
+  // カプセル切り替え時（またはパス巡回時）・アンマウント時にタイマー・ロックをクリーンアップ
+  // 注意: suppressNextClickRef および押しっぱなし中の gestureRef は、長押し開封後に指を離した際の
+  // 合成 click を確実に消費して次カプセルが 1/3 進まないようここではリセットしない
   useEffect(() => {
     clearLongPressTimers();
+    clearStage3OpenTimer();
     crackStateRef.current = { capsuleKey: activeCapsuleKey, progress: 0 };
     isLockedForCapsuleKeyRef.current = null;
-    gestureRef.current = {
-      active: false,
-      inputType: null,
-      identifier: null,
-      capsuleKey: null,
-      startX: 0,
-      startY: 0,
-      lastX: 0,
-      startTimeMs: 0,
-      isDragging: false,
-    };
     return () => {
       clearLongPressTimers();
+      clearStage3OpenTimer();
     };
-  }, [activeCapsuleKey, clearLongPressTimers]);
+  }, [activeCapsuleKey, clearLongPressTimers, clearStage3OpenTimer]);
 
   const triggerCompleteCrack = useCallback(
     (targetKey: string) => {
       if (isLockedForCapsuleKeyRef.current === targetKey) return;
       isLockedForCapsuleKeyRef.current = targetKey;
       clearLongPressTimers();
-      // Stage 3（progress: 3）を保持し、開封の瞬間（3D開口・閃光・ゲージ3/3）を描画する
+      clearStage3OpenTimer();
+      // Stage 3（progress: 3）を保持し、Web Locks 非対応環境等の即時更新でも
+      // 開封演出（3D開口・閃光・ゲージ3/3）が完了してから次カプセルへ切り替える
       crackStateRef.current = { capsuleKey: targetKey, progress: 3 };
       setInteractionState({
         capsuleKey: targetKey,
@@ -199,9 +205,12 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
         isPressing: false,
       });
       setLocalTrigger((prev) => prev + 1);
-      void onCrack();
+      stage3OpenTimerRef.current = setTimeout(() => {
+        stage3OpenTimerRef.current = null;
+        void latestCallbacksRef.current.onCrack();
+      }, STAGE_3_OPEN_DURATION_MS);
     },
-    [clearLongPressTimers, onCrack],
+    [clearLongPressTimers, clearStage3OpenTimer],
   );
 
   const advanceCrackStep = useCallback(
@@ -233,6 +242,12 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     (clientX: number, clientY: number) => {
       const g = gestureRef.current;
       if (!g.active || !g.capsuleKey) return;
+
+      const currentKey = latestCallbacksRef.current.activeCapsuleKey;
+      if (g.capsuleKey !== currentKey) {
+        suppressNextClickRef.current = true;
+        return;
+      }
 
       const dx = clientX - g.startX;
       const dy = clientY - g.startY;
@@ -309,6 +324,11 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
         onPass: passFn,
         onRecycle: recycleFn,
       } = latestCallbacksRef.current;
+
+      if (targetKey && targetKey !== currentKey) {
+        suppressNextClickRef.current = true;
+        return;
+      }
 
       if (cancelled || !currentCapsule || !currentKey || currentlyUpdating) {
         return;
@@ -387,7 +407,7 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
     ) {
       return;
     }
-    if (gestureRef.current.active) {
+    if (gestureRef.current.active && gestureRef.current.capsuleKey === activeCapsuleKey) {
       return;
     }
 
@@ -487,11 +507,11 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
   };
 
   const handleClick = () => {
-    if (!activeCapsule || !activeCapsuleKey || isUpdating) return;
     if (suppressNextClickRef.current) {
       suppressNextClickRef.current = false;
       return;
     }
+    if (!activeCapsule || !activeCapsuleKey || isUpdating) return;
     if (isLockedForCapsuleKeyRef.current === activeCapsuleKey) {
       return;
     }
