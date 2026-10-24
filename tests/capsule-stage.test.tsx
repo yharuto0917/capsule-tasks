@@ -636,5 +636,9 @@ describe('App メイン画面統合操作 (開封・左スワイプ先送り・�
     await waitFor(() => expect(screen.getByTestId('status-coins')).toHaveTextContent('180'));
     expect(screen.getByTestId('status-combo')).toHaveTextContent('4');
     expect(screen.getByTestId('active-capsule-title')).toHaveTextContent('溜まった洗濯物をたたむ');
+
+    // Enterキー操作（pointerDownを伴わない単独click）で開封した直後、次カプセルの最初のEnter（click）が飲まれず1/3へ進むこと
+    fireEvent.click(screen.getByTestId('active-capsule-button'));
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '1');
   });
 });

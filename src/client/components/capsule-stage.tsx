@@ -226,7 +226,9 @@ export const CapsuleStage: React.FC<CapsuleStageProps> = ({
       isLockedForCapsuleKeyRef.current = targetKey;
       pendingCrackKeyRef.current = null;
       gestureRef.current.isDragging = false;
-      suppressNextClickRef.current = true;
+      if (gestureRef.current.active) {
+        suppressNextClickRef.current = true;
+      }
       clearLongPressTimers();
       clearStage3OpenTimer();
       latestCallbacksRef.current.onOpeningLockChange?.(true);
