@@ -8,6 +8,10 @@ export interface ThreeCapsuleCanvasProps {
   capsuleColor: CapsuleColorVariant;
   crackProgress: number;
   interactionTrigger: number;
+  /** 横スワイプ量（px）に応じた3D空間内の転がり・傾き制御 */
+  dragOffsetX?: number;
+  /** 長押しチャージ中の3Dバイブレーション＆内部発光制御 */
+  isPressing?: boolean;
 }
 
 const CAPSULE_PALETTE: Record<
@@ -58,6 +62,8 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
   capsuleColor,
   crackProgress,
   interactionTrigger,
+  dragOffsetX = 0,
+  isPressing = false,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -72,13 +78,24 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     spinBoost: 0,
     squash: 0,
   });
+  const initialColorRef = useRef<CapsuleColorVariant>(capsuleColor);
   const crackProgressRef = useRef<number>(crackProgress);
+  const dragOffsetXRef = useRef<number>(dragOffsetX);
+  const isPressingRef = useRef<boolean>(isPressing);
+
+  useEffect(() => {
+    dragOffsetXRef.current = dragOffsetX;
+  }, [dragOffsetX]);
+
+  useEffect(() => {
+    isPressingRef.current = isPressing;
+  }, [isPressing]);
 
   useEffect(() => {
     crackProgressRef.current = crackProgress;
-    impulseRef.current.wobble = 0.42 + crackProgress * 0.18;
-    impulseRef.current.squash = 0.22;
-    impulseRef.current.spinBoost = 0.16;
+    impulseRef.current.wobble = 0.45 + crackProgress * 0.22;
+    impulseRef.current.squash = 0.24;
+    impulseRef.current.spinBoost = 0.18;
   }, [crackProgress, interactionTrigger]);
 
   useEffect(() => {
@@ -92,8 +109,8 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     mat.roughness = palette.roughness;
     mat.needsUpdate = true;
 
-    impulseRef.current.spinBoost = 0.32;
-    impulseRef.current.squash = 0.18;
+    impulseRef.current.spinBoost = 0.34;
+    impulseRef.current.squash = 0.2;
   }, [capsuleColor]);
 
   useEffect(() => {
@@ -116,8 +133,8 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     renderer.toneMappingExposure = 1.15;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
-    const width = container.clientWidth || 240;
-    const height = container.clientHeight || 240;
+    const width = container.clientWidth || 256;
+    const height = container.clientHeight || 256;
     renderer.setSize(width, height, false);
 
     const scene = new THREE.Scene();
@@ -147,7 +164,7 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     bounceLight.position.set(0, -4.0, 2.0);
     scene.add(bounceLight);
 
-    const innerLight = new THREE.PointLight(0xffd166, 0.8, 4.5);
+    const innerLight = new THREE.PointLight(0xffd166, 0.9, 5.0);
     innerLight.position.set(0, 0.05, 0);
     innerLightRef.current = innerLight;
 
@@ -165,7 +182,7 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     topDomeGroupRef.current = topDomeGroup;
     rootGroup.add(topDomeGroup);
 
-    const initialPalette = CAPSULE_PALETTE[capsuleColor];
+    const initialPalette = CAPSULE_PALETTE[initialColorRef.current];
     const topMaterial = new THREE.MeshPhysicalMaterial({
       color: initialPalette.color,
       emissive: initialPalette.emissive,
@@ -302,30 +319,40 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     leafletMesh.rotation.set(0.2, 0.4, -0.15);
     prizeGroup.add(leafletMesh);
 
-    // 4. クラック発光リング＆稲妻シャード（ヒビ割れ進行時に出現）
+    // 4. 3Dクラック発光リング＆立体稲妻シャード（ヒビ割れ進行・長押しチャージ時に3D空間で出現）
     const crackRingGroup = new THREE.Group();
     crackRingGroupRef.current = crackRingGroup;
     rootGroup.add(crackRingGroup);
 
-    const crackGlowMat = new THREE.MeshBasicMaterial({
+    const crackGlowMat = new THREE.MeshPhysicalMaterial({
       color: 0xfff3b0,
+      emissive: 0xffbe0b,
+      emissiveIntensity: 1.4,
+      roughness: 0.1,
+      metalness: 0.2,
     });
     materialsToDispose.push(crackGlowMat);
 
-    const crackShardGeo = new THREE.OctahedronGeometry(0.11, 0);
+    const seamGlowRingGeo = new THREE.TorusGeometry(1.16, 0.028, 16, 64);
+    geographiesToDispose.push(seamGlowRingGeo);
+    const seamGlowRing = new THREE.Mesh(seamGlowRingGeo, crackGlowMat);
+    seamGlowRing.rotation.x = Math.PI / 2;
+    crackRingGroup.add(seamGlowRing);
+
+    const crackShardGeo = new THREE.OctahedronGeometry(0.12, 0);
     geographiesToDispose.push(crackShardGeo);
 
-    for (let i = 0; i < 8; i++) {
-      const angle = (i * Math.PI * 2) / 8;
+    for (let i = 0; i < 10; i++) {
+      const angle = (i * Math.PI * 2) / 10;
       const shard = new THREE.Mesh(crackShardGeo, crackGlowMat);
       shard.position.set(
-        Math.cos(angle) * 1.19,
-        (i % 2 === 0 ? 1 : -1) * 0.04,
-        Math.sin(angle) * 1.19,
+        Math.cos(angle) * 1.21,
+        (i % 2 === 0 ? 1 : -1) * 0.045,
+        Math.sin(angle) * 1.21,
       );
-      shard.scale.set(1.6, 0.45, 0.45);
+      shard.scale.set(1.75, 0.48, 0.48);
       shard.rotation.y = -angle;
-      shard.rotation.z = (i % 2 === 0 ? 1 : -1) * 0.35;
+      shard.rotation.z = (i % 2 === 0 ? 1 : -1) * 0.38;
       crackRingGroup.add(shard);
     }
 
@@ -336,8 +363,8 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     const ctx = shadowCanvas.getContext('2d');
     if (ctx) {
       const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 46);
-      grad.addColorStop(0, 'rgba(30, 27, 24, 0.34)');
-      grad.addColorStop(0.55, 'rgba(30, 27, 24, 0.12)');
+      grad.addColorStop(0, 'rgba(30, 27, 24, 0.36)');
+      grad.addColorStop(0.55, 'rgba(30, 27, 24, 0.13)');
       grad.addColorStop(1, 'rgba(30, 27, 24, 0)');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, 128, 128);
@@ -350,7 +377,7 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
       depthWrite: false,
     });
     materialsToDispose.push(shadowMat);
-    const shadowGeo = new THREE.PlaneGeometry(2.1, 2.1);
+    const shadowGeo = new THREE.PlaneGeometry(2.2, 2.2);
     geographiesToDispose.push(shadowGeo);
     const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
     shadowMesh.rotation.x = -Math.PI / 2;
@@ -367,36 +394,51 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
     const renderLoop = () => {
       const elapsed = (performance.now() - startTimeMs) * 0.001;
       const progress = crackProgressRef.current;
+      const dragX = dragOffsetXRef.current;
+      const pressing = isPressingRef.current;
       const imp = impulseRef.current;
 
       imp.wobble *= 0.9;
       imp.spinBoost *= 0.92;
       imp.squash *= 0.86;
 
+      // スワイプ量に応じた3D空間内のX移動と立体ロール回転
+      const targetPosX = (dragX / 130) * 0.55;
+      rootGroup.position.x += (targetPosX - rootGroup.position.x) * 0.35;
+
+      // 長押しチャージ中の3Dバイブレーション
+      const pressJitter = pressing ? Math.sin(elapsed * 55) * 0.055 : 0;
+
       if (!prefersReducedMotion) {
-        rootGroup.rotation.y += 0.012 + imp.spinBoost;
+        const dragSpin = (dragX / 130) * 0.04;
+        rootGroup.rotation.y += 0.012 + imp.spinBoost + dragSpin + (pressing ? 0.035 : 0);
         rootGroup.position.y = Math.sin(elapsed * 2.6) * 0.07;
       }
 
       const wobbleAngle = Math.sin(elapsed * 28) * imp.wobble;
-      rootGroup.rotation.z = -0.08 + wobbleAngle;
+      const dragTiltZ = -(dragX / 130) * 0.32;
+      rootGroup.rotation.z = -0.08 + wobbleAngle + dragTiltZ + pressJitter;
 
-      const scaleY = 1 - imp.squash * 0.35;
-      const scaleXZ = 1 + imp.squash * 0.22;
+      const pressScaleBoost = pressing ? 0.045 : 0;
+      const scaleY = 1 - imp.squash * 0.35 - pressScaleBoost;
+      const scaleXZ = 1 + imp.squash * 0.22 + pressScaleBoost;
       rootGroup.scale.set(scaleXZ, scaleY, scaleXZ);
 
-      // ヒビ割れ進行に応じて上半球がパカッと浮き上がり内部が発光
-      const targetGap = progress * 0.14;
-      topDomeGroup.position.y += (targetGap - topDomeGroup.position.y) * 0.2;
-      topDomeGroup.rotation.z += (-progress * 0.09 - topDomeGroup.rotation.z) * 0.2;
+      // ヒビ割れ進行または長押しチャージに応じて3D上半球がパカッと浮き上がり内部が発光
+      const targetGap = progress * 0.16 + (pressing ? 0.06 : 0);
+      topDomeGroup.position.y += (targetGap - topDomeGroup.position.y) * 0.22;
+      topDomeGroup.rotation.z += (-progress * 0.1 - topDomeGroup.rotation.z) * 0.22;
 
       prizeGroup.rotation.y = elapsed * 1.8;
-      innerLight.intensity = 0.8 + progress * 2.2;
+      innerLight.intensity = 0.9 + progress * 2.4 + (pressing ? 1.5 : 0);
 
-      crackRingGroup.visible = progress > 0;
-      crackRingGroup.scale.setScalar(1 + Math.sin(elapsed * 18) * 0.04 * progress);
+      crackRingGroup.visible = progress > 0 || pressing;
+      const ringPulse = 1 + Math.sin(elapsed * 20) * 0.045 * Math.max(progress, pressing ? 1 : 0);
+      crackRingGroup.scale.setScalar(ringPulse);
+      crackRingGroup.rotation.y = -elapsed * 1.4;
 
       const shadowScale = 1 - rootGroup.position.y * 0.25;
+      shadowMesh.position.x = rootGroup.position.x * 0.85;
       shadowMesh.scale.set(shadowScale, shadowScale, 1);
 
       renderer.render(scene, camera);
@@ -428,14 +470,14 @@ export const ThreeCapsuleCanvas: React.FC<ThreeCapsuleCanvasProps> = ({
       materialsToDispose.forEach((mat) => mat.dispose());
       renderer.dispose();
     };
-  }, [capsuleColor]);
+  }, []);
 
   return (
     <div
       ref={containerRef}
       data-testid="three-capsule-canvas"
       data-capsule-color={capsuleColor}
-      className="relative h-56 w-56 sm:h-60 sm:w-60 flex items-center justify-center pointer-events-none"
+      className="relative h-56 w-56 sm:h-64 sm:w-64 flex items-center justify-center pointer-events-none"
     >
       <canvas ref={canvasRef} className="block h-full w-full" />
     </div>
