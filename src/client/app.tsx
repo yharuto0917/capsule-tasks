@@ -3,12 +3,54 @@ import { Award, PlusCircle, RefreshCw, Timer, Trash2 } from 'lucide-react';
 import { CapsuleMachineVisual } from './components/capsule-machine-visual';
 import { CapsuleStage, type StageToastNotification } from './components/capsule-stage';
 import { HeaderStatusBar } from './components/header-status-bar';
+import { MedalCollectionDrawer } from './components/medal-collection-drawer';
+import { MedalRevealModal } from './components/medal-reveal-modal';
 import { TaskSupplySheet } from './components/task-supply-sheet';
 import { SUPPLY_BONUS_COINS_PER_CAPSULE, useCapsuleStore } from './hooks/use-capsule-store';
+import { useMedalStorage } from './hooks/use-medal-storage';
 import { useSoundEffect } from './hooks/use-sound-effect';
-import type { CapsuleTask } from '../shared/schemas';
+import {
+  generateCommemorativeMedal,
+  type MedalGenerateRequestPayload,
+  type MedalGenerateResponse,
+} from './lib/api-client';
+import { createFallbackMedalSvgDataUrl } from '../server/lib/medal-frames';
+import type { CapsuleTask, MedalItem, MedalRarity } from '../shared/schemas';
 
-export const App: React.FC = () => {
+export interface AppProps {
+  /** テスト等でのメダル生成API関数差し替え用 */
+  generateMedalFn?: (payload: MedalGenerateRequestPayload) => Promise<MedalGenerateResponse>;
+  /** テスト等でのレア度抽選乱数関数差し替え用 */
+  randomFn?: () => number;
+}
+
+interface RevealModalState {
+  isOpen: boolean;
+  taskTitle: string;
+  rarity: MedalRarity;
+  coinsEarned: number;
+  todayCombo: number;
+  medal: MedalItem | null;
+  imageUrl: string | null;
+  isGenerating: boolean;
+  statusNote: string | null;
+}
+
+function extractClientEngravedText(medalPrompt: string, taskTitle: string): string {
+  const match = /engraved text\s+['"]([^'"]+)['"]/i.exec(medalPrompt);
+  if (match && match[1]?.trim()) {
+    return match[1].trim().toUpperCase().slice(0, 24);
+  }
+  if (taskTitle.includes('企画書')) return 'DRAFT CONQUEROR';
+  if (taskTitle.includes('洗濯')) return 'LAUNDRY MASTER';
+  if (taskTitle.includes('領収書') || taskTitle.includes('経費')) return 'RECEIPT HUNTER';
+  return 'TASK CONQUEROR';
+}
+
+export const App: React.FC<AppProps> = ({
+  generateMedalFn = generateCommemorativeMedal,
+  randomFn,
+}) => {
   const {
     capsules,
     activeCapsule,
@@ -22,7 +64,19 @@ export const App: React.FC = () => {
     crackActiveCapsule,
     toggleSound,
     syncDateComboState,
-  } = useCapsuleStore();
+  } = useCapsuleStore(randomFn ? { randomFn } : {});
+
+  const {
+    medals,
+    totalMedalCount,
+    sortOrder,
+    rarityFilter,
+    isLoading: isMedalsLoading,
+    setSortOrder,
+    setRarityFilter,
+    saveMedal,
+    loadMedalImage,
+  } = useMedalStorage();
 
   const { playSupply, playCrack, playFanfare, playPass, playRecycle, unlockAudio } = useSoundEffect(
     playerState.soundEnabled,
@@ -31,11 +85,15 @@ export const App: React.FC = () => {
   const [interactionTrigger, setInteractionTrigger] = useState<number>(0);
   const [isOpeningCapsule, setIsOpeningCapsule] = useState<boolean>(false);
   const [isSupplySheetOpen, setIsSupplySheetOpen] = useState<boolean>(false);
+  const [isCollectionDrawerOpen, setIsCollectionDrawerOpen] = useState<boolean>(false);
+  const [selectedCollectionMedalId, setSelectedCollectionMedalId] = useState<string | null>(null);
+  const [revealState, setRevealState] = useState<RevealModalState | null>(null);
   const [statusFeedback, setStatusFeedback] =
     useState<string>('カプセルを連打・長押ししてパカッと開封しよう！');
   const [toastNotification, setToastNotification] = useState<StageToastNotification | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isOpeningCapsuleRef = useRef<boolean>(false);
+  const crackGenerationSeqRef = useRef<number>(0);
 
   const handleOpeningLockChange = (isOpening: boolean) => {
     isOpeningCapsuleRef.current = isOpening;
@@ -86,15 +144,97 @@ export const App: React.FC = () => {
     if (!activeCapsule) return;
     unlockAudio();
     const result = await crackActiveCapsule(activeCapsule.id);
-    if (result) {
-      playFanfare(result.awardedRarity);
-      showToast({
-        type: 'crack',
-        text: `開封完了！＋${result.coinsEarned}コイン獲得`,
+    if (!result) return;
+
+    playFanfare(result.awardedRarity);
+    showToast({
+      type: 'crack',
+      text: `開封完了！＋${result.coinsEarned}コイン獲得`,
+    });
+    setStatusFeedback(
+      `「${result.crackedTask.title}」を開封完了！＋${result.coinsEarned}コイン（${result.awardedRarity}メダル抽選）`,
+    );
+
+    const seq = ++crackGenerationSeqRef.current;
+    const fallbackEngraved = extractClientEngravedText(
+      result.crackedTask.medalPrompt,
+      result.crackedTask.title,
+    );
+    const provisionalMedalId = `medal_${result.awardedRarity.toLowerCase()}_${Date.now()}_${seq}`;
+    const provisionalMedal: MedalItem = {
+      medalId: provisionalMedalId,
+      taskId: result.crackedTask.id,
+      taskTitle: result.crackedTask.title,
+      medalName: `「${result.crackedTask.title}」記念メダル`,
+      engravedText: fallbackEngraved,
+      rarity: result.awardedRarity,
+      imageBlobKey: `img_${provisionalMedalId}`,
+      modelUsed: 'gemini-nano-banana-2.1',
+      unlockedAt: new Date().toISOString(),
+      upgradeLevel: 0,
+    };
+    const fallbackSvgUrl = createFallbackMedalSvgDataUrl(result.awardedRarity, fallbackEngraved);
+
+    setRevealState({
+      isOpen: true,
+      taskTitle: result.crackedTask.title,
+      rarity: result.awardedRarity,
+      coinsEarned: result.coinsEarned,
+      todayCombo: result.updatedCombo,
+      medal: provisionalMedal,
+      imageUrl: null,
+      isGenerating: true,
+      statusNote: null,
+    });
+
+    try {
+      const generated = await generateMedalFn({
+        taskId: result.crackedTask.id,
+        taskTitle: result.crackedTask.title,
+        medalPrompt: result.crackedTask.medalPrompt,
+        rarity: result.awardedRarity,
+        engravedText: fallbackEngraved,
       });
-      setStatusFeedback(
-        `「${result.crackedTask.title}」を開封完了！＋${result.coinsEarned}コイン（${result.awardedRarity}メダル抽選）`,
-      );
+
+      const savedMedal = await saveMedal({
+        medal: generated.medal,
+        imageData: generated.imageDataUrl,
+        mimeType: generated.mimeType,
+      });
+
+      if (crackGenerationSeqRef.current === seq) {
+        setRevealState((prev) =>
+          prev
+            ? {
+                ...prev,
+                medal: savedMedal,
+                imageUrl: generated.imageDataUrl,
+                isGenerating: false,
+                statusNote: null,
+              }
+            : null,
+        );
+      }
+    } catch {
+      const savedFallback = await saveMedal({
+        medal: provisionalMedal,
+        imageData: fallbackSvgUrl,
+        mimeType: 'image/svg+xml',
+      }).catch(() => provisionalMedal);
+
+      if (crackGenerationSeqRef.current === seq) {
+        setRevealState((prev) =>
+          prev
+            ? {
+                ...prev,
+                medal: savedFallback,
+                imageUrl: fallbackSvgUrl,
+                isGenerating: false,
+                statusNote: '記念メダルを図鑑に保存しました',
+              }
+            : null,
+        );
+      }
     }
   };
 
@@ -139,6 +279,27 @@ export const App: React.FC = () => {
 
   const handleCloseSupplySheet = () => {
     setIsSupplySheetOpen(false);
+  };
+
+  const handleOpenCollectionDrawer = (initialMedalId: string | null = null) => {
+    unlockAudio();
+    setSelectedCollectionMedalId(initialMedalId);
+    setIsCollectionDrawerOpen(true);
+    setStatusFeedback('オリジナル記念メダル図鑑（N / R / SR / SSR）');
+  };
+
+  const handleCloseCollectionDrawer = () => {
+    setIsCollectionDrawerOpen(false);
+  };
+
+  const handleCloseRevealModal = () => {
+    setRevealState((prev) => (prev ? { ...prev, isOpen: false } : null));
+  };
+
+  const handleOpenCollectionFromModal = () => {
+    const targetMedalId = revealState?.medal?.medalId ?? null;
+    setRevealState((prev) => (prev ? { ...prev, isOpen: false } : null));
+    handleOpenCollectionDrawer(targetMedalId);
   };
 
   const handleSupplySuccess = (suppliedTasks: CapsuleTask[]) => {
@@ -285,12 +446,20 @@ export const App: React.FC = () => {
 
             <button
               type="button"
-              onClick={() => setStatusFeedback('オリジナル記念メダル図鑑（N / R / SR / SSR）')}
+              onClick={() => handleOpenCollectionDrawer(null)}
               data-testid="open-collection-drawer-button"
               className="toy-push-btn col-span-2 flex min-h-[50px] items-center justify-center gap-1.5 rounded-2xl bg-[#2563EB] py-2.5 px-2.5 text-xs sm:text-sm font-black text-white whitespace-nowrap cursor-pointer"
             >
               <Award className="h-4 w-4 stroke-[2.75] text-[#FFBE0B] shrink-0" aria-hidden="true" />
               <span>メダル図鑑</span>
+              {totalMedalCount > 0 && (
+                <span
+                  data-testid="collection-count-badge"
+                  className="rounded-full bg-[#FFBE0B] text-[#1E1B18] px-1.5 py-0.5 font-display text-[10px] font-bold"
+                >
+                  {totalMedalCount}
+                </span>
+              )}
             </button>
           </div>
         </footer>
@@ -304,6 +473,37 @@ export const App: React.FC = () => {
           onSupplyStamp={supplyStampCapsule}
           onSupplyCapsules={supplyCapsules}
           onSupplySuccess={handleSupplySuccess}
+        />
+
+        {/* 5. カプセル開封・AI記念メダル獲得モーダル（FR-13, FR-14） */}
+        <MedalRevealModal
+          isOpen={Boolean(revealState?.isOpen)}
+          onClose={handleCloseRevealModal}
+          onOpenCollection={handleOpenCollectionFromModal}
+          taskTitle={revealState?.taskTitle ?? ''}
+          rarity={revealState?.rarity ?? 'N'}
+          coinsEarned={revealState?.coinsEarned ?? 30}
+          todayCombo={revealState?.todayCombo}
+          medal={revealState?.medal ?? null}
+          imageUrl={revealState?.imageUrl ?? null}
+          isGenerating={Boolean(revealState?.isGenerating)}
+          statusNote={revealState?.statusNote}
+        />
+
+        {/* 6. メダルコレクション棚（図鑑ドロワー・レア度別/日付順・詳細表示）（FR-13, FR-16） */}
+        <MedalCollectionDrawer
+          isOpen={isCollectionDrawerOpen}
+          onClose={handleCloseCollectionDrawer}
+          medals={medals}
+          totalMedalCount={totalMedalCount}
+          totalCracked={playerState.totalCracked}
+          sortOrder={sortOrder}
+          rarityFilter={rarityFilter}
+          isLoading={isMedalsLoading}
+          onChangeSortOrder={setSortOrder}
+          onChangeRarityFilter={setRarityFilter}
+          loadMedalImage={loadMedalImage}
+          initialSelectedMedalId={selectedCollectionMedalId}
         />
       </main>
     </div>

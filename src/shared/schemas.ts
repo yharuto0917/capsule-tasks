@@ -152,6 +152,36 @@ export interface TaskExtractionResponse {
 }
 
 /**
+ * `gemini-nano-banana-2.1` 記念メダル生成リクエスト（`POST /api/medals/generate`）
+ */
+export interface MedalGenerateRequestPayload {
+  taskId?: string;
+  taskTitle?: string;
+  title?: string;
+  medalPrompt?: string;
+  rarity?: MedalRarity;
+  engravedText?: string;
+  medalName?: string;
+}
+
+/**
+ * `gemini-nano-banana-2.1` 記念メダル生成レスポンス（`POST /api/medals/generate`）
+ */
+export interface MedalGenerateResponse {
+  medal: MedalItem;
+  imageDataUrl: string;
+  imageBase64: string;
+  mimeType: string;
+  thinkingLevel: 'minimal' | 'medium';
+  frameReference: {
+    rarity: MedalRarity;
+    frameId: string;
+    frameNameJa: string;
+    frameNameEn: string;
+  };
+}
+
+/**
  * `gemini-3.8-flash` (Interactions API `response_format`) 用の単一カプセルタスク JSON Schema
  */
 export const CAPSULE_TASK_DRAFT_JSON_SCHEMA = {
