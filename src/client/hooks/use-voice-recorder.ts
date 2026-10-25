@@ -143,6 +143,8 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
   const startTimeMsRef = useRef<number>(0);
   const timerIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelledRef = useRef<boolean>(false);
+  /** 録音開始試行の世代カウンタ。キャンセル・アンマウントで加算し、進行中の開始処理を無効化する */
+  const startAttemptRef = useRef<number>(0);
   const optionsRef = useRef(options);
 
   useEffect(() => {
@@ -171,6 +173,8 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
 
   useEffect(() => {
     return () => {
+      // アンマウント時点で進行中の開始処理（getUserMedia 待ち）も無効化する
+      startAttemptRef.current += 1;
       stopTimer();
       const recorder = mediaRecorderRef.current;
       if (recorder && recorder.state !== 'inactive') {
@@ -224,9 +228,24 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
     setIsPreparing(true);
     cancelledRef.current = false;
     chunksRef.current = [];
+    const startAttempt = ++startAttemptRef.current;
 
     try {
       const stream = await requestUserMedia({ audio: true });
+
+      if (startAttempt !== startAttemptRef.current) {
+        // 権限ダイアログ表示中にシートが閉じられた／キャンセルされた場合は、
+        // 取得したストリームを即座に停止し、非表示のまま録音を開始しない
+        for (const track of stream.getTracks()) {
+          try {
+            track.stop();
+          } catch {
+            // ignore track stop error
+          }
+        }
+        return false;
+      }
+
       mediaStreamRef.current = stream;
 
       const checker =
@@ -267,6 +286,9 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
 
       return true;
     } catch {
+      if (startAttempt !== startAttemptRef.current) {
+        return false;
+      }
       stopStreamTracks();
       setIsPreparing(false);
       setIsRecording(false);
@@ -278,8 +300,10 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
   const stopRecording = useCallback(async (): Promise<VoiceRecordingResult | null> => {
     const recorder = mediaRecorderRef.current;
     if (!recorder || recorder.state === 'inactive') {
+      startAttemptRef.current += 1;
       stopTimer();
       stopStreamTracks();
+      setIsPreparing(false);
       setIsRecording(false);
       return null;
     }
@@ -337,6 +361,8 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
   }, [stopStreamTracks, stopTimer]);
 
   const cancelRecording = useCallback(() => {
+    // 進行中の開始処理（getUserMedia 待ち）も無効化する
+    startAttemptRef.current += 1;
     cancelledRef.current = true;
     stopTimer();
     const recorder = mediaRecorderRef.current;

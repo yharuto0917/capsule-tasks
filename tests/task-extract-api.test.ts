@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/client/app';
 import { TaskSupplySheet } from '../src/client/components/task-supply-sheet';
@@ -9,6 +9,7 @@ import {
   blobToBase64,
   detectSupportedAudioMimeType,
   normalizeRecorderMimeType,
+  useVoiceRecorder,
 } from '../src/client/hooks/use-voice-recorder';
 import { extractCapsuleTasks } from '../src/client/lib/api-client';
 import serverApp from '../src/server/index';
@@ -126,7 +127,11 @@ describe('gemini-client & POST /api/tasks/extract (Hono Gemini API プロキシ)
     const callArgs = createInteractionMock.mock.calls[0][0];
     expect(callArgs.model).toBe(TASK_EXTRACTION_MODEL);
     expect(callArgs.generation_config).toEqual({ thinking_level: 'low' });
-    expect(callArgs.response_format).toEqual(TASK_EXTRACTION_JSON_SCHEMA);
+    expect(callArgs.response_format).toEqual({
+      type: 'text',
+      mime_type: 'application/json',
+      schema: TASK_EXTRACTION_JSON_SCHEMA,
+    });
     expect(callArgs.input).toEqual([
       {
         type: 'text',
@@ -232,6 +237,56 @@ describe('useVoiceRecorder ユーティリティ (MIME自動判定・Base64化)'
     const blob = new Blob([new Uint8Array([104, 101, 108, 108, 111])], { type: 'audio/webm' });
     const base64 = await blobToBase64(blob);
     expect(base64).toBe('aGVsbG8=');
+  });
+
+  it('マイク準備中にキャンセルすると、権限許可後も録音を開始せず取得ストリームを停止する', async () => {
+    let resolveUserMedia: (stream: unknown) => void = () => {};
+    const getUserMedia = vi.fn(
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveUserMedia = resolve;
+        }),
+    );
+    const trackStop = vi.fn();
+    const fakeStream = { getTracks: () => [{ stop: trackStop }] };
+    const recorderStart = vi.fn();
+
+    class FakeMediaRecorder {
+      static isTypeSupported = () => true;
+      mimeType = 'audio/webm';
+      state = 'inactive';
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: (() => void) | null = null;
+      start = recorderStart;
+      stop = vi.fn();
+    }
+
+    const { result } = renderHook(() =>
+      useVoiceRecorder({
+        getUserMedia: getUserMedia as never,
+        MediaRecorderClass: FakeMediaRecorder as never,
+      }),
+    );
+
+    let startPromise: Promise<boolean> | undefined;
+    act(() => {
+      startPromise = result.current.startRecording();
+    });
+    expect(result.current.isPreparing).toBe(true);
+
+    // 権限ダイアログ表示中にシートが閉じられる（cancelRecording が呼ばれる）ケース
+    act(() => {
+      result.current.cancelRecording();
+    });
+
+    await act(async () => {
+      resolveUserMedia(fakeStream);
+    });
+
+    await expect(startPromise).resolves.toBe(false);
+    expect(trackStop).toHaveBeenCalledTimes(1);
+    expect(recorderStart).not.toHaveBeenCalled();
+    expect(result.current.isRecording).toBe(false);
   });
 });
 
@@ -414,6 +469,72 @@ describe('TaskSupplySheet & App 統合検証 (FR-01, FR-03, FR-04, FR-05)', () =
     expect(screen.getByTestId('supply-sheet-feedback')).toHaveTextContent(
       '1個のカプセルを一括補充！＋10コイン獲得',
     );
+  });
+
+  it('マイク準備中（getUserMedia 待ち）に補充シートを閉じた場合、権限許可後に非表示で録音が始まらずストリームが停止される', async () => {
+    let resolveUserMedia: (stream: unknown) => void = () => {};
+    const getUserMedia = vi.fn(
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveUserMedia = resolve;
+        }),
+    );
+    const trackStop = vi.fn();
+    const fakeStream = { getTracks: () => [{ stop: trackStop }] };
+    const recorderStart = vi.fn();
+
+    class FakeMediaRecorder {
+      static isTypeSupported = () => true;
+      mimeType = 'audio/webm';
+      state: RecordingState = 'inactive';
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: (() => void) | null = null;
+      start = recorderStart;
+      stop = vi.fn();
+    }
+
+    const onClose = vi.fn();
+    const { rerender } = render(
+      React.createElement(TaskSupplySheet, {
+        isOpen: true,
+        onClose,
+        onSupplyStamp: vi.fn(),
+        onSupplyCapsules: vi.fn(),
+        voiceRecorderOptions: {
+          getUserMedia: getUserMedia as never,
+          MediaRecorderClass: FakeMediaRecorder as unknown as typeof MediaRecorder,
+        },
+      }),
+    );
+
+    // 録音開始ボタンをタップして getUserMedia 待ち（isPreparing）に入る
+    fireEvent.click(screen.getByTestId('voice-record-button'));
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+
+    // 権限ダイアログ待ちの間に閉じるボタンをタップし、シートを非表示（isOpen=false）にする
+    fireEvent.click(screen.getByTestId('close-supply-sheet-button'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    rerender(
+      React.createElement(TaskSupplySheet, {
+        isOpen: false,
+        onClose,
+        onSupplyStamp: vi.fn(),
+        onSupplyCapsules: vi.fn(),
+        voiceRecorderOptions: {
+          getUserMedia: getUserMedia as never,
+          MediaRecorderClass: FakeMediaRecorder as unknown as typeof MediaRecorder,
+        },
+      }),
+    );
+
+    // 非表示になった後に getUserMedia が解決される
+    await act(async () => {
+      resolveUserMedia(fakeStream);
+    });
+
+    expect(trackStop).toHaveBeenCalledTimes(1);
+    expect(recorderStart).not.toHaveBeenCalled();
   });
 
   it('フロントエンドのソースおよびビルドバンドルに GEMINI_API_KEY が露出しないこと', () => {

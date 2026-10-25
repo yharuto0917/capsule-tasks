@@ -257,7 +257,11 @@ export const tasksExtractRoute = new Hono<{ Bindings: CloudflareBindings }>().po
         generation_config: {
           thinking_level: 'low',
         },
-        response_format: TASK_EXTRACTION_JSON_SCHEMA,
+        response_format: {
+          type: 'text',
+          mime_type: 'application/json',
+          schema: TASK_EXTRACTION_JSON_SCHEMA,
+        },
         input: inputParts,
       });
 

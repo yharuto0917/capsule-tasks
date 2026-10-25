@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   BookOpen,
   CheckCircle2,
@@ -106,6 +106,12 @@ export const TaskSupplySheet: React.FC<TaskSupplySheetProps> = ({
     clearError: clearRecorderError,
   } = useVoiceRecorder(voiceRecorderOptions);
 
+  useEffect(() => {
+    if (!isOpen && (isRecording || isPreparing)) {
+      cancelRecording();
+    }
+  }, [cancelRecording, isOpen, isPreparing, isRecording]);
+
   if (!isOpen) {
     return null;
   }
@@ -115,7 +121,7 @@ export const TaskSupplySheet: React.FC<TaskSupplySheetProps> = ({
   const activeError = localError ?? recorderError;
 
   const handleClose = () => {
-    if (isRecording) {
+    if (isRecording || isPreparing) {
       cancelRecording();
     }
     setLocalError(null);
