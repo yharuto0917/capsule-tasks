@@ -201,9 +201,9 @@ flowchart TD
   * フロントエンドに `MediaRecorder API` を用いた録音フック `useVoiceRecorder` と、画面下部「＋補充」から開く `TaskSupplySheet`（AI音声録音ボタン、常連スタンプ8種1タップ補充、雑なテキスト一括補充）を実装。
   * カプセルが1個補充されるたびに「＋10コイン」と投入効果音・アニメーションを即時付与する（FR-04）。
 * **受け入れ条件（Acceptance Criteria）**：
-  * [ ] 常連スタンプ8種のいずれかを1タップするだけで文字入力なしに即座にカプセルが生成され、＋10コインが付与されること（FR-03, FR-04）。
-  * [ ] 音声ボヤきまたは雑な複数行テキストを送信すると、Hono `/api/tasks/extract` 経由で `gemini-3.8-flash` が複数の `CapsuleTask`（`capsuleColor`, `rarityBoost`, `medalPrompt` 付き）に分割して一括登録すること（FR-01, FR-05）。
-  * [ ] フロントエンドのバンドルに `GEMINI_API_KEY` が一切露出していないこと。
+  * [x] 常連スタンプ8種のいずれかを1タップするだけで文字入力なしに即座にカプセルが生成され、＋10コインが付与されること（FR-03, FR-04）。
+  * [x] 音声ボヤきまたは雑な複数行テキストを送信すると、Hono `/api/tasks/extract` 経由で `gemini-3.8-flash` が複数の `CapsuleTask`（`capsuleColor`, `rarityBoost`, `medalPrompt` 付き）に分割して一括登録すること（FR-01, FR-05）。
+  * [x] フロントエンドのバンドルに `GEMINI_API_KEY` が一切露出していないこと。
 * **想定変更ファイル**：`src/server/lib/gemini-client.ts`, `src/server/routes/tasks-extract.ts`, `src/client/lib/api-client.ts`, `src/client/hooks/use-voice-recorder.ts`, `src/client/components/task-supply-sheet.tsx`, `tests/task-extract-api.test.ts`
 * **規模**：M（5〜6ファイル）
 

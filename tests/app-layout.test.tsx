@@ -53,8 +53,10 @@ describe('App (1画面完結ガチャステージ骨格)', () => {
       'blue',
     );
 
-    // カプセル補充で+10コイン
+    // カプセル補充シートを開き、常連スタンプ1タップで+10コイン
     fireEvent.click(screen.getByTestId('open-supply-sheet-button'));
+    expect(screen.getByTestId('task-supply-sheet')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('supply-stamp-button-0'));
     await waitFor(() => expect(screen.getByTestId('status-coins')).toHaveTextContent('160'));
   });
 

@@ -194,7 +194,7 @@ export const CAPSULE_TASK_DRAFT_JSON_SCHEMA = {
 
 /**
  * `gemini-3.8-flash` マルチモーダル一括タスク抽出（`POST /api/tasks/extract`）用 JSON Schema
- * Interactions API の `response_format` にそのまま渡せるスキーマ定義
+ * Interactions API の `response_format.schema` に渡すスキーマ定義
  */
 export const TASK_EXTRACTION_JSON_SCHEMA = {
   type: 'object',
