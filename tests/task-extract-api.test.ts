@@ -289,7 +289,7 @@ describe('useVoiceRecorder ユーティリティ (MIME自動判定・Base64化)'
     expect(result.current.isRecording).toBe(false);
   });
 
-  it('キャンセル直後に再録音した際、旧レコーダーの遅延 dataavailable / onstop が後から発火しても新録音に混入・干渉しない', async () => {
+  function createDelayedRecorderHarness() {
     const instances: FakeDelayedMediaRecorder[] = [];
     const trackStops: Array<ReturnType<typeof vi.fn>> = [];
 
@@ -320,6 +320,18 @@ describe('useVoiceRecorder ユーティリティ (MIME自動判定・Base64化)'
         this.state = 'inactive';
       }
     }
+
+    return {
+      instances,
+      trackStops,
+      getUserMedia,
+      FakeDelayedMediaRecorder,
+    };
+  }
+
+  it('キャンセル直後に再録音した際、旧レコーダーの遅延 dataavailable / onstop が後から発火しても新録音に混入・干渉しない', async () => {
+    const { instances, trackStops, getUserMedia, FakeDelayedMediaRecorder } =
+      createDelayedRecorderHarness();
 
     const { result } = renderHook(() =>
       useVoiceRecorder({
@@ -378,6 +390,81 @@ describe('useVoiceRecorder ユーティリティ (MIME自動判定・Base64化)'
 
     expect(recordingResult).not.toBeNull();
     expect(recordingResult!.base64Data).toBe(btoa('new'));
+    expect(trackStops[1]).toHaveBeenCalledTimes(1);
+    expect(result.current.isRecording).toBe(false);
+  });
+
+  it('stopRecording 待ち中にキャンセルして再録音した際、旧レコーダーの遅延 dataavailable / onstop で旧 Promise は null に解決され新録音に干渉しない', async () => {
+    const { instances, trackStops, getUserMedia, FakeDelayedMediaRecorder } =
+      createDelayedRecorderHarness();
+
+    const { result } = renderHook(() =>
+      useVoiceRecorder({
+        getUserMedia: getUserMedia as never,
+        MediaRecorderClass: FakeDelayedMediaRecorder as never,
+      }),
+    );
+
+    // 1. 録音Aを開始し、録音中チャンクを1つ受け取る
+    await act(async () => {
+      await expect(result.current.startRecording()).resolves.toBe(true);
+    });
+    expect(instances).toHaveLength(1);
+    const recorderA = instances[0];
+
+    act(() => {
+      const oldInitialChunk = new Blob([new Uint8Array([99, 99])], { type: 'audio/webm' });
+      recorderA.ondataavailable?.({ data: oldInitialChunk } as BlobEvent);
+    });
+
+    // 2. 録音Aの stopRecording() を呼ぶ（recorderA.stop() は呼ばれ onstop ハンドラが登録されるが、停止イベントはまだ届かない保留状態）
+    let stopPromiseA!: ReturnType<typeof result.current.stopRecording>;
+    act(() => {
+      stopPromiseA = result.current.stopRecording();
+    });
+    expect(recorderA.state).toBe('inactive');
+    expect(recorderA.onstop).toBeTypeOf('function');
+
+    // 3. 停止イベントが届く前に cancelRecording() し、直後に録音Bを開始する
+    act(() => {
+      result.current.cancelRecording();
+    });
+    expect(result.current.isRecording).toBe(false);
+    expect(trackStops[0]).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await expect(result.current.startRecording()).resolves.toBe(true);
+    });
+    expect(instances).toHaveLength(2);
+    const recorderB = instances[1];
+    expect(result.current.isRecording).toBe(true);
+
+    // 4. ここで録音Aの遅延 dataavailable と onstop を発火させる
+    let resultA: Awaited<ReturnType<typeof result.current.stopRecording>> | undefined;
+    await act(async () => {
+      const staleChunk = new Blob([new Uint8Array([111, 108, 100])], { type: 'audio/webm' }); // "old"
+      recorderA.ondataavailable?.({ data: staleChunk } as BlobEvent);
+      recorderA.onstop?.();
+      resultA = await stopPromiseA;
+    });
+
+    // 5. 録音Aの stopRecording() Promise は null に解決され、録音Bの状態・ストリームが維持されること
+    expect(resultA).toBeNull();
+    expect(result.current.isRecording).toBe(true);
+    expect(trackStops[1]).not.toHaveBeenCalled();
+
+    // 録音Bを通常通り停止すると、録音Bのチャンクのみから結果が得られること
+    let resultB: Awaited<ReturnType<typeof result.current.stopRecording>> = null;
+    await act(async () => {
+      const stopPromiseB = result.current.stopRecording();
+      const freshChunk = new Blob([new Uint8Array([110, 101, 119])], { type: 'audio/webm' }); // "new"
+      recorderB.ondataavailable?.({ data: freshChunk } as BlobEvent);
+      recorderB.onstop?.();
+      resultB = await stopPromiseB;
+    });
+
+    expect(resultB).not.toBeNull();
+    expect(resultB!.base64Data).toBe(btoa('new'));
     expect(trackStops[1]).toHaveBeenCalledTimes(1);
     expect(result.current.isRecording).toBe(false);
   });
