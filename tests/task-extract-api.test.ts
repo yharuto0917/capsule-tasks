@@ -423,7 +423,10 @@ describe('useVoiceRecorder ユーティリティ (MIME自動判定・Base64化)'
       stopPromiseA = result.current.stopRecording();
     });
     expect(recorderA.state).toBe('inactive');
-    expect(recorderA.onstop).toBeTypeOf('function');
+    const savedOnDataAvailableA = recorderA.ondataavailable;
+    const savedOnStopA = recorderA.onstop;
+    expect(savedOnDataAvailableA).toBeTypeOf('function');
+    expect(savedOnStopA).toBeTypeOf('function');
 
     // 3. 停止イベントが届く前に cancelRecording() し、直後に録音Bを開始する
     act(() => {
@@ -439,12 +442,12 @@ describe('useVoiceRecorder ユーティリティ (MIME自動判定・Base64化)'
     const recorderB = instances[1];
     expect(result.current.isRecording).toBe(true);
 
-    // 4. ここで録音Aの遅延 dataavailable と onstop を発火させる
+    // 4. ここで保存しておいた録音Aの遅延 dataavailable / onstop ハンドラ参照を直接呼び出して発火させる
     let resultA: Awaited<ReturnType<typeof result.current.stopRecording>> | undefined;
     await act(async () => {
       const staleChunk = new Blob([new Uint8Array([111, 108, 100])], { type: 'audio/webm' }); // "old"
-      recorderA.ondataavailable?.({ data: staleChunk } as BlobEvent);
-      recorderA.onstop?.();
+      savedOnDataAvailableA!({ data: staleChunk } as BlobEvent);
+      savedOnStopA!();
       resultA = await stopPromiseA;
     });
 
