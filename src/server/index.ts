@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { tasksExtractRoute } from './routes/tasks-extract';
 
 export interface CloudflareBindings {
   GEMINI_API_KEY?: string;
@@ -18,7 +19,8 @@ const app = new Hono<{ Bindings: CloudflareBindings }>()
       },
       hasApiKey: Boolean(c.env?.GEMINI_API_KEY),
     });
-  });
+  })
+  .route('/api/tasks', tasksExtractRoute);
 
 export type AppType = typeof app;
 export default app;

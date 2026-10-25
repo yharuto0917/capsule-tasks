@@ -3,33 +3,10 @@ import { Award, PlusCircle, RefreshCw, Timer, Trash2 } from 'lucide-react';
 import { CapsuleMachineVisual } from './components/capsule-machine-visual';
 import { CapsuleStage, type StageToastNotification } from './components/capsule-stage';
 import { HeaderStatusBar } from './components/header-status-bar';
-import { useCapsuleStore } from './hooks/use-capsule-store';
+import { TaskSupplySheet } from './components/task-supply-sheet';
+import { SUPPLY_BONUS_COINS_PER_CAPSULE, useCapsuleStore } from './hooks/use-capsule-store';
 import { useSoundEffect } from './hooks/use-sound-effect';
-import type { ExtractedCapsuleTaskDraft } from '../shared/schemas';
-
-const QUICK_SUPPLY_PRESETS: ExtractedCapsuleTaskDraft[] = [
-  {
-    title: '机の上を5分だけ片付ける',
-    capsuleColor: 'blue',
-    rarityBoost: 1.0,
-    medalPrompt:
-      "A shining bronze commemorative medal featuring a sparkling tidy desk in high relief, engraved text 'DESK CLEANER' along the rim, 3D metallic render",
-  },
-  {
-    title: '未読メールを3通だけ返信する',
-    capsuleColor: 'red',
-    rarityBoost: 1.5,
-    medalPrompt:
-      "A polished silver commemorative medal featuring a flying envelope and lightning bolt in high relief, engraved text 'MAIL RESPONDER' along the rim, 3D metallic render",
-  },
-  {
-    title: '明日の優先タスクをメモに書き出す',
-    capsuleColor: 'gold',
-    rarityBoost: 2.0,
-    medalPrompt:
-      "A gleaming golden commemorative medal featuring a compass and star chart in high relief, engraved text 'VISION PLANNER' along the rim, 3D metallic render",
-  },
-];
+import type { CapsuleTask } from '../shared/schemas';
 
 export const App: React.FC = () => {
   const {
@@ -39,6 +16,7 @@ export const App: React.FC = () => {
     storageError,
     isUpdating,
     supplyCapsules,
+    supplyStampCapsule,
     passActiveCapsule,
     recycleActiveCapsule,
     crackActiveCapsule,
@@ -52,12 +30,12 @@ export const App: React.FC = () => {
 
   const [interactionTrigger, setInteractionTrigger] = useState<number>(0);
   const [isOpeningCapsule, setIsOpeningCapsule] = useState<boolean>(false);
+  const [isSupplySheetOpen, setIsSupplySheetOpen] = useState<boolean>(false);
   const [statusFeedback, setStatusFeedback] =
     useState<string>('カプセルを連打・長押ししてパカッと開封しよう！');
   const [toastNotification, setToastNotification] = useState<StageToastNotification | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isOpeningCapsuleRef = useRef<boolean>(false);
-  const quickSupplyIndexRef = useRef<number>(0);
 
   const handleOpeningLockChange = (isOpening: boolean) => {
     isOpeningCapsuleRef.current = isOpening;
@@ -153,16 +131,27 @@ export const App: React.FC = () => {
     setStatusFeedback('リサイクル完了！＋5コイン獲得');
   };
 
-  const handleQuickSupply = async () => {
+  const handleOpenSupplySheet = () => {
     if (isUpdating) return;
     unlockAudio();
-    const preset = QUICK_SUPPLY_PRESETS[quickSupplyIndexRef.current % QUICK_SUPPLY_PRESETS.length];
-    quickSupplyIndexRef.current += 1;
-    const supplied = await supplyCapsules(preset);
-    if (supplied.length === 0) return;
+    setIsSupplySheetOpen(true);
+  };
+
+  const handleCloseSupplySheet = () => {
+    setIsSupplySheetOpen(false);
+  };
+
+  const handleSupplySuccess = (suppliedTasks: CapsuleTask[]) => {
+    if (suppliedTasks.length === 0) return;
+    unlockAudio();
     playSupply();
     setInteractionTrigger((prev) => prev + 1);
-    setStatusFeedback('カプセル補充ボーナス！＋10コイン獲得');
+    const earnedCoins = suppliedTasks.length * SUPPLY_BONUS_COINS_PER_CAPSULE;
+    const summaryText =
+      suppliedTasks.length === 1
+        ? `「${suppliedTasks[0].title}」を補充！＋${earnedCoins}コイン獲得`
+        : `${suppliedTasks.length}個のカプセルを一括補充！＋${earnedCoins}コイン獲得`;
+    setStatusFeedback(summaryText);
   };
 
   const handleToggleSound = () => {
@@ -282,7 +271,7 @@ export const App: React.FC = () => {
           <div className="grid grid-cols-5 gap-2">
             <button
               type="button"
-              onClick={handleQuickSupply}
+              onClick={handleOpenSupplySheet}
               disabled={isUpdating}
               data-testid="open-supply-sheet-button"
               className="toy-push-btn col-span-3 flex min-h-[50px] items-center justify-center gap-1.5 rounded-2xl bg-[#FFBE0B] py-2.5 px-2.5 text-xs sm:text-sm font-black text-[#1E1B18] whitespace-nowrap cursor-pointer"
@@ -305,6 +294,17 @@ export const App: React.FC = () => {
             </button>
           </div>
         </footer>
+
+        {/* 4. タスク補充ボトムシート（AI音声ボヤき・常連スタンプ8種・複数行テキスト一括補充） */}
+        <TaskSupplySheet
+          isOpen={isSupplySheetOpen}
+          onClose={handleCloseSupplySheet}
+          stamps={playerState.customStamps}
+          isUpdating={isUpdating}
+          onSupplyStamp={supplyStampCapsule}
+          onSupplyCapsules={supplyCapsules}
+          onSupplySuccess={handleSupplySuccess}
+        />
       </main>
     </div>
   );
