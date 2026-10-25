@@ -24,9 +24,27 @@ export interface SaveMedalWithImageInput {
   replaceMedalId?: string;
   /**
    * true の場合、replaceMedalId の仮メダルが DB 内に未確定状態で存在する場合のみ置換・新規保存を行う。
-   * 仮メダルがすでに削除または確定済みの場合は、他タブ等で確定済みとみなして新規保存をスキップする。
+   * すでに先行確定メダルが存在する場合はその確定メダルを返し、仮メダルも先行確定メダルも存在しない場合は
+   * ReplaceTargetNotFoundError を投げて未保存として扱う。
    */
   requireReplaceTarget?: boolean;
+}
+
+export class ReplaceTargetNotFoundError extends Error {
+  readonly replaceMedalId: string;
+
+  constructor(replaceMedalId: string) {
+    super(`置換対象の仮メダル（${replaceMedalId}）が存在しないため保存できませんでした`);
+    this.name = 'ReplaceTargetNotFoundError';
+    this.replaceMedalId = replaceMedalId;
+  }
+}
+
+export function isReplaceTargetNotFoundError(error: unknown): error is ReplaceTargetNotFoundError {
+  return (
+    error instanceof ReplaceTargetNotFoundError ||
+    (error instanceof Error && error.name === 'ReplaceTargetNotFoundError')
+  );
 }
 
 export interface MedalWithImageResult {
@@ -325,7 +343,7 @@ export async function saveMedalWithImage({
       if (replaceMedalId && requireReplaceTarget) {
         const currentProvisional = memoryMedalStore.get(replaceMedalId);
         if (!currentProvisional || !currentProvisional.pendingGeneration) {
-          return normalizedMedal;
+          throw new ReplaceTargetNotFoundError(replaceMedalId);
         }
       }
     }
@@ -399,7 +417,7 @@ export async function saveMedalWithImage({
             if (replaceMedalId && requireReplaceTarget) {
               const currentProvisional = allItems.find((item) => item.medalId === replaceMedalId);
               if (!currentProvisional || !currentProvisional.pendingGeneration) {
-                resolvedMedal = normalizedMedal;
+                abortAndReject(new ReplaceTargetNotFoundError(replaceMedalId));
                 return;
               }
             }

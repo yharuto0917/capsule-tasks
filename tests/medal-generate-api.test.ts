@@ -5,7 +5,15 @@ import { App, PENDING_MEDAL_GENERATIONS_STORAGE_KEY } from '../src/client/app';
 import { MedalCollectionDrawer } from '../src/client/components/medal-collection-drawer';
 import { MedalRevealModal } from '../src/client/components/medal-reveal-modal';
 import { generateCommemorativeMedal } from '../src/client/lib/api-client';
-import { clearAllMedals, getMedalWithImage, listMedals } from '../src/client/lib/indexed-db';
+import {
+  ReplaceTargetNotFoundError,
+  clearAllMedals,
+  deleteMedalById,
+  getMedalWithImage,
+  isReplaceTargetNotFoundError,
+  listMedals,
+  saveMedalWithImage,
+} from '../src/client/lib/indexed-db';
 import serverApp from '../src/server/index';
 import { setGeminiClientFactoryForTests } from '../src/server/lib/gemini-client';
 import {
@@ -1147,5 +1155,344 @@ describe('4. App 一気通貫統合テスト (カプセル開封 → レア度�
     expect(screen.getByTestId('detail-medal-name')).toHaveTextContent('カプセルBのランドリー勲章');
     expect(screen.getByTestId('detail-engraved-text')).toHaveTextContent('LAUNDRY MASTER');
     expect(screen.getByTestId('detail-task-title')).toHaveTextContent('溜まった洗濯物をたたむ');
+  });
+
+  it('【再レビュー2回目指摘1回帰】復元時のIndexedDB読み取りが例外を投げた場合、provisionalSavedInDb: true のlocalStorage補助レコードを削除せず保持し、DB読み取り回復時に再試行・自動再開できる', async () => {
+    const firstGenerateMedalFn = vi.fn().mockImplementation(
+      () =>
+        new Promise<MedalGenerateResponse>(() => {
+          // 応答前にアンマウント（ページ再読み込み）
+        }),
+    );
+
+    const { unmount: unmountFirst } = render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: firstGenerateMedalFn,
+      }),
+    );
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+
+    await waitFor(() => {
+      expect(firstGenerateMedalFn).toHaveBeenCalledTimes(1);
+    });
+
+    // provisionalSavedInDb: true の生成待ちレコードが localStorage に保存されるのを待つ
+    await waitFor(() => {
+      const raw = window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY);
+      expect(raw).toBeTruthy();
+      const parsed = JSON.parse(raw!);
+      expect(parsed[0]?.provisionalSavedInDb).toBe(true);
+    });
+
+    unmountFirst();
+
+    // 再マウント直後の IndexedDB 読み取り（getAll）が一時的な例外を投げる状況を再現
+    let failGetAll = true;
+    let failedGetAllCount = 0;
+    const originalGetAll = IDBObjectStore.prototype.getAll;
+    vi.spyOn(IDBObjectStore.prototype, 'getAll').mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<IDBObjectStore['getAll']>
+    ) {
+      if (failGetAll) {
+        failedGetAllCount += 1;
+        throw new DOMException('Transient IDB read failure', 'UnknownError');
+      }
+      return originalGetAll.apply(this, args);
+    });
+
+    const secondGenerateMedalFn = vi.fn().mockResolvedValue({
+      medal: {
+        medalId: 'medal_ssr_recovered_after_idb_read_error',
+        taskId: 'cap_demo_001',
+        taskTitle: '企画書ドラフトを提出する',
+        medalName: 'DB読み取りエラー回復後の虹彩勲章',
+        engravedText: 'DRAFT CONQUEROR',
+        rarity: 'SSR',
+        imageBlobKey: 'img_medal_ssr_recovered_after_idb_read_error',
+        modelUsed: 'gemini-nano-banana-2.1',
+        unlockedAt: '2026-10-25T12:40:00.000Z',
+        upgradeLevel: 0,
+      },
+      imageDataUrl: 'data:image/jpeg;base64,RECOVERED_AFTER_IDB_READ_ERROR_IMG',
+      imageBase64: 'RECOVERED_AFTER_IDB_READ_ERROR_IMG',
+      mimeType: 'image/jpeg',
+      thinkingLevel: 'medium',
+      frameReference: {
+        rarity: 'SSR',
+        frameId: 'frame_ssr_hologram',
+        frameNameJa: 'ホログラム枠',
+        frameNameEn: 'Hologram Frame',
+      },
+    } satisfies MedalGenerateResponse);
+
+    render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: secondGenerateMedalFn,
+      }),
+    );
+
+    // IndexedDB の読み取りが複数回失敗した後も、localStorage の provisionalSavedInDb: true レコードが削除されず保持されていること
+    await waitFor(() => {
+      expect(failedGetAllCount).toBeGreaterThanOrEqual(2);
+    });
+
+    const preservedRaw = window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY);
+    expect(preservedRaw).toBeTruthy();
+    expect(JSON.parse(preservedRaw!)[0]?.provisionalSavedInDb).toBe(true);
+
+    // 一時的な DB 読み取りエラーが解消されると、再試行によって自動再開・確定されること
+    failGetAll = false;
+
+    await waitFor(() => {
+      expect(secondGenerateMedalFn).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('medal-reveal-modal')).toBeInTheDocument();
+      expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute(
+        'src',
+        'data:image/jpeg;base64,RECOVERED_AFTER_IDB_READ_ERROR_IMG',
+      );
+    });
+
+    const finalMedals = await listMedals('date-desc', 'ALL');
+    expect(finalMedals).toHaveLength(1);
+    expect(finalMedals[0].medalId).toBe('medal_ssr_recovered_after_idb_read_error');
+    expect(window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY)).toBeNull();
+  });
+
+  it('【再レビュー2回目指摘2回帰】復元一覧の読み取り後〜API前チェックの間に他タブが仮メダルを確定した場合、モーダルが isGenerating: true のまま残らず先行確定メダルと画像で確定状態へ更新される', async () => {
+    const firstGenerateMedalFn = vi.fn().mockImplementation(
+      () =>
+        new Promise<MedalGenerateResponse>(() => {
+          // 応答前にアンマウント
+        }),
+    );
+
+    const { unmount: unmountFirst } = render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: firstGenerateMedalFn,
+      }),
+    );
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+
+    await waitFor(() => {
+      expect(firstGenerateMedalFn).toHaveBeenCalledTimes(1);
+    });
+
+    const provisionalMedals = await listMedals('date-desc', 'ALL');
+    expect(provisionalMedals).toHaveLength(1);
+    const provisionalId = provisionalMedals[0].medalId;
+
+    await waitFor(() => {
+      const raw = window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY);
+      expect(raw).toBeTruthy();
+      expect(JSON.parse(raw!)[0]?.provisionalSavedInDb).toBe(true);
+    });
+
+    unmountFirst();
+
+    // 再マウント時：
+    // 1回目の復元一覧読み取り（loadPendingRecordsFromDbAndStorage）ではまだ仮メダルが未確定として返り、
+    // その直後（executeMedalGenerationFlow の API前チェックの読み取り前）に他タブが仮メダルを確定する競合を再現
+    let openCallIndex = 0;
+    let otherTabFinalizedPromise: Promise<MedalItem> | null = null;
+    const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+    vi.spyOn(globalThis.indexedDB, 'open').mockImplementation(
+      (...args: Parameters<typeof globalThis.indexedDB.open>) => {
+        openCallIndex += 1;
+        // openCallIndex === 1: useMedalStorage 初回 autoLoad
+        // openCallIndex === 2: loadPendingRecordsFromDbAndStorage による復元一覧の読み取り
+        // openCallIndex === 3: executeMedalGenerationFlow の API前チェックの読み取り
+        if (openCallIndex === 3 && !otherTabFinalizedPromise) {
+          const delayedReq = {} as IDBOpenDBRequest;
+          otherTabFinalizedPromise = saveMedalWithImage({
+            medal: {
+              medalId: 'medal_ssr_other_tab_pre_api_winner',
+              taskId: 'cap_demo_001',
+              taskTitle: '企画書ドラフトを提出する',
+              medalName: '他タブで先行確定した虹彩勲章',
+              engravedText: 'OTHER TAB WINNER',
+              rarity: 'SSR',
+              imageBlobKey: 'img_medal_ssr_other_tab_pre_api_winner',
+              modelUsed: 'gemini-nano-banana-2.1',
+              unlockedAt: '2026-10-25T12:45:00.000Z',
+              upgradeLevel: 0,
+            },
+            imageData: 'data:image/jpeg;base64,OTHER_TAB_PRE_API_WINNER_IMG',
+            mimeType: 'image/jpeg',
+            replaceMedalId: provisionalId,
+            requireReplaceTarget: true,
+          });
+          void otherTabFinalizedPromise.then(() => {
+            const realReq = originalOpen(...args);
+            realReq.onsuccess = (ev) => {
+              (delayedReq as { result: IDBDatabase }).result = realReq.result;
+              delayedReq.onsuccess?.call(realReq, ev);
+            };
+            realReq.onerror = (ev) => {
+              delayedReq.onerror?.call(realReq, ev);
+            };
+          });
+          return delayedReq;
+        }
+        return originalOpen(...args);
+      },
+    );
+
+    const secondGenerateMedalFn = vi.fn();
+
+    render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: secondGenerateMedalFn,
+      }),
+    );
+
+    // 復元されたモーダルが isGenerating: true のまま残らず、先行確定した他タブのメダル情報と画像へ更新されること
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-reveal-modal')).toBeInTheDocument();
+      expect(screen.queryByTestId('medal-generating-skeleton')).not.toBeInTheDocument();
+      expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute(
+        'src',
+        'data:image/jpeg;base64,OTHER_TAB_PRE_API_WINNER_IMG',
+      );
+      expect(screen.getByTestId('reveal-engraved-text')).toHaveTextContent('OTHER TAB WINNER');
+    });
+
+    expect(secondGenerateMedalFn).not.toHaveBeenCalled();
+    expect(screen.getByTestId('open-collection-from-modal-button')).toBeEnabled();
+    expect(window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY)).toBeNull();
+  });
+
+  it('【再レビュー2回目指摘3回帰】requireReplaceTarget 有効時に置換対象も先行確定メダルも存在しない場合（IndexedDB・メモリ両方）、成功結果にせずエラーとして返し、呼び出し側は未保存情報を保持して hasPersistedInDb を立てない', async () => {
+    const sampleMedal: MedalItem = {
+      medalId: 'medal_ssr_orphan_final',
+      taskId: 'cap_demo_001',
+      taskTitle: '企画書ドラフトを提出する',
+      medalName: '置換対象不在の勲章',
+      engravedText: 'ORPHAN TARGET',
+      rarity: 'SSR',
+      imageBlobKey: 'img_medal_ssr_orphan_final',
+      modelUsed: 'gemini-nano-banana-2.1',
+      unlockedAt: '2026-10-25T12:50:00.000Z',
+      upgradeLevel: 0,
+    };
+
+    // 1. IndexedDB 側：置換対象も先行確定メダルも存在しない場合は ReplaceTargetNotFoundError を投げて保存しないこと
+    await expect(
+      saveMedalWithImage({
+        medal: sampleMedal,
+        imageData: 'data:image/jpeg;base64,ORPHAN_IDB_IMG',
+        mimeType: 'image/jpeg',
+        replaceMedalId: 'non_existent_provisional_idb',
+        requireReplaceTarget: true,
+      }),
+    ).rejects.toThrow(ReplaceTargetNotFoundError);
+
+    expect(await listMedals('date-desc', 'ALL')).toHaveLength(0);
+
+    // 2. インメモリフォールバック側：同じく置換対象も先行確定メダルも存在しない場合は ReplaceTargetNotFoundError を投げて保存しないこと
+    const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+    const openSpy = vi.spyOn(globalThis.indexedDB, 'open').mockImplementation(() => {
+      throw new DOMException('IDB unavailable for memory test', 'SecurityError');
+    });
+
+    let memoryCaughtError: unknown = null;
+    try {
+      await saveMedalWithImage({
+        medal: sampleMedal,
+        imageData: 'data:image/jpeg;base64,ORPHAN_MEM_IMG',
+        mimeType: 'image/jpeg',
+        replaceMedalId: 'non_existent_provisional_mem',
+        requireReplaceTarget: true,
+      });
+    } catch (err) {
+      memoryCaughtError = err;
+    }
+    expect(isReplaceTargetNotFoundError(memoryCaughtError)).toBe(true);
+    expect(await listMedals('date-desc', 'ALL')).toHaveLength(0);
+
+    openSpy.mockImplementation(originalOpen);
+
+    // 3. App 統合動作：仮メダル保存後（provisionalSavedInDb: true）、最終保存前に仮メダルが先行確定なしで消失していた場合、
+    // 保存成功扱い（hasPersistedInDb: true）にせず、生成待ち・未保存情報を保持して保存エラーを表示すること
+    let resolveGeneration!: (value: MedalGenerateResponse) => void;
+    const generateMedalFn = vi.fn().mockImplementation(
+      () =>
+        new Promise<MedalGenerateResponse>((resolve) => {
+          resolveGeneration = resolve;
+        }),
+    );
+
+    render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn,
+      }),
+    );
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+
+    await waitFor(() => {
+      expect(generateMedalFn).toHaveBeenCalledTimes(1);
+    });
+
+    const provisionalList = await listMedals('date-desc', 'ALL');
+    expect(provisionalList).toHaveLength(1);
+    const provisionalId = provisionalList[0].medalId;
+
+    // 先行確定メダルを作らずに DB から仮メダルを削除して「対象不在」状態にする
+    await deleteMedalById(provisionalId);
+    expect(await listMedals('date-desc', 'ALL')).toHaveLength(0);
+
+    // 生成APIが完了して requireReplaceTarget: true で最終保存が試みられる
+    resolveGeneration({
+      medal: sampleMedal,
+      imageDataUrl: 'data:image/jpeg;base64,ORPHAN_APP_IMG',
+      imageBase64: 'ORPHAN_APP_IMG',
+      mimeType: 'image/jpeg',
+      thinkingLevel: 'medium',
+      frameReference: {
+        rarity: 'SSR',
+        frameId: 'frame_ssr_hologram',
+        frameNameJa: 'ホログラム枠',
+        frameNameEn: 'Hologram Frame',
+      },
+    });
+
+    // 保存成功と誤認せず、エラー表示になり、「図鑑で見る」は無効（hasPersistedInDb: false）であること
+    await waitFor(() => {
+      expect(screen.getByTestId('reveal-save-error')).toHaveTextContent('保存できませんでした');
+    });
+
+    expect(screen.queryByTestId('reveal-status-note')).not.toBeInTheDocument();
+    expect(screen.getByTestId('open-collection-from-modal-button')).toBeDisabled();
+    expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute(
+      'src',
+      'data:image/jpeg;base64,ORPHAN_APP_IMG',
+    );
+
+    // 生成待ち・未保存情報が削除されずに保持されていること
+    const pendingRaw = window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY);
+    expect(pendingRaw).toBeTruthy();
+    expect(JSON.parse(pendingRaw!)[0]?.pendingSaveTarget?.medal?.medalId).toBe(
+      'medal_ssr_orphan_final',
+    );
+
+    fireEvent.click(screen.getByTestId('close-reveal-modal-button'));
+    expect(screen.getByTestId('unsaved-medal-alert')).toBeInTheDocument();
   });
 });

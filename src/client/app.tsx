@@ -15,7 +15,7 @@ import {
   type MedalGenerateResponse,
 } from './lib/api-client';
 import { getSafeLocalStorage } from './lib/capsule-store-storage';
-import { getMedalWithImage, listMedals } from './lib/indexed-db';
+import { listMedals } from './lib/indexed-db';
 import { createFallbackMedalSvgDataUrl } from '../server/lib/medal-frames';
 import {
   isValidMedalRarity,
@@ -294,24 +294,43 @@ function createInitialRevealStateFromRecord(
   };
 }
 
-async function loadPendingRecordsFromDbAndStorage(): Promise<PendingMedalGenerationRecord[]> {
+interface LoadPendingRecordsResult {
+  records: PendingMedalGenerationRecord[];
+  dbReadFailed: boolean;
+  finalizedMedals: Map<string, MedalItem>;
+}
+
+async function loadPendingRecordsFromDbAndStorage(): Promise<LoadPendingRecordsResult> {
   const localRecords = readPendingMedalGenerations();
-  let dbMedals: MedalItem[];
+  let dbMedals: MedalItem[] | null;
   try {
     dbMedals = await listMedals('date-asc', 'ALL');
   } catch {
-    dbMedals = [];
+    dbMedals = null;
+  }
+
+  if (dbMedals === null) {
+    // IndexedDB の読み取りに失敗した場合は「DBに対象がない」と区別し、
+    // localStorage の補助レコード（provisionalSavedInDb: true を含む）を削除せず保持する
+    return {
+      records: [],
+      dbReadFailed: true,
+      finalizedMedals: new Map(),
+    };
   }
 
   const finalizedProvisionalIds = new Set<string>();
+  const finalizedMedals = new Map<string, MedalItem>();
   const dbPendingMap = new Map<string, PendingMedalGenerationRecord>();
 
   for (const m of dbMedals) {
     if (m.replacedProvisionalMedalId) {
       finalizedProvisionalIds.add(m.replacedProvisionalMedalId);
+      finalizedMedals.set(m.replacedProvisionalMedalId, m);
     }
     if (!m.pendingGeneration) {
       finalizedProvisionalIds.add(m.medalId);
+      finalizedMedals.set(m.medalId, m);
     } else {
       const recovered = recoverPendingRecordFromMedal(m);
       if (recovered) {
@@ -343,7 +362,7 @@ async function loadPendingRecordsFromDbAndStorage(): Promise<PendingMedalGenerat
           pendingSaveTarget: localRec.pendingSaveTarget,
         });
       }
-    } else if (!localRec.provisionalSavedInDb) {
+    } else if (!localRec.provisionalSavedInDb || localRec.pendingSaveTarget) {
       mergedMap.set(provId, {
         ...localRec,
         provisionalMedal: attachPendingGenerationMetadata(localRec),
@@ -353,7 +372,11 @@ async function loadPendingRecordsFromDbAndStorage(): Promise<PendingMedalGenerat
     }
   }
 
-  return Array.from(mergedMap.values());
+  return {
+    records: Array.from(mergedMap.values()),
+    dbReadFailed: false,
+    finalizedMedals,
+  };
 }
 
 function extractClientEngravedText(medalPrompt: string, taskTitle: string): string {
@@ -518,6 +541,65 @@ export const App: React.FC<AppProps> = ({
           state.provisionalMedalId === targetProvisionalId,
         );
 
+      const applyAlreadyFinalizedMedal = async (
+        alreadyFinalized: MedalItem,
+        fallbackSvgUrl: string,
+      ): Promise<void> => {
+        removePendingMedalGeneration(targetProvisionalId);
+        syncUnsavedRecords(
+          unsavedRecordsRef.current.filter(
+            (item) => item.provisionalMedal.medalId !== targetProvisionalId,
+          ),
+        );
+        await refreshMedalsRef.current();
+
+        let finalizedImgUrl = fallbackSvgUrl;
+        let finalizedMime = 'image/svg+xml';
+        try {
+          const existingImg = await loadMedalImageRef.current(alreadyFinalized.imageBlobKey);
+          if (existingImg && typeof existingImg.imageData === 'string') {
+            finalizedImgUrl = existingImg.imageData;
+            finalizedMime = existingImg.mimeType;
+          }
+        } catch {
+          // ignore image load failure
+        }
+
+        if (
+          selectedCollectionMedalIdRef.current === targetProvisionalId ||
+          selectedCollectionMedalIdRef.current === alreadyFinalized.medalId
+        ) {
+          if (
+            rarityFilterRef.current !== 'ALL' &&
+            rarityFilterRef.current !== alreadyFinalized.rarity
+          ) {
+            rarityFilterRef.current = 'ALL';
+            setRarityFilterRef.current('ALL');
+          }
+          updateSelectedCollectionMedalId(alreadyFinalized.medalId);
+        }
+
+        if (!isCancelled() && crackGenerationSeqRef.current === seq) {
+          updateRevealState((prev) =>
+            isMatchingRevealTarget(prev)
+              ? {
+                  ...prev!,
+                  rarity: alreadyFinalized.rarity,
+                  medal: alreadyFinalized,
+                  imageUrl: finalizedImgUrl,
+                  mimeType: finalizedMime,
+                  isGenerating: false,
+                  isSaving: false,
+                  hasPersistedInDb: true,
+                  saveError: null,
+                  statusNote: null,
+                  isFallback: false,
+                }
+              : prev,
+          );
+        }
+      };
+
       try {
         let record: PendingMedalGenerationRecord = {
           ...initialRecord,
@@ -535,36 +617,7 @@ export const App: React.FC<AppProps> = ({
               });
               if (!savedProvisional.pendingGeneration) {
                 // すでに他タブ等で確定済みのメダルが存在する場合は生成APIを呼ばずに確定状態を反映して終了
-                removePendingMedalGeneration(targetProvisionalId);
-                if (!isCancelled() && crackGenerationSeqRef.current === seq) {
-                  let finalizedImgUrl = record.fallbackSvgUrl;
-                  let finalizedMime = 'image/svg+xml';
-                  try {
-                    const existingImg = await loadMedalImageRef.current(
-                      savedProvisional.imageBlobKey,
-                    );
-                    if (existingImg && typeof existingImg.imageData === 'string') {
-                      finalizedImgUrl = existingImg.imageData;
-                      finalizedMime = existingImg.mimeType;
-                    }
-                  } catch {
-                    // ignore image load failure
-                  }
-                  updateRevealState((prev) =>
-                    isMatchingRevealTarget(prev)
-                      ? {
-                          ...prev!,
-                          medal: savedProvisional,
-                          imageUrl: finalizedImgUrl,
-                          mimeType: finalizedMime,
-                          isGenerating: false,
-                          isSaving: false,
-                          hasPersistedInDb: true,
-                          saveError: null,
-                        }
-                      : prev,
-                  );
-                }
+                await applyAlreadyFinalizedMedal(savedProvisional, record.fallbackSvgUrl);
                 return;
               }
               record = {
@@ -584,10 +637,14 @@ export const App: React.FC<AppProps> = ({
           } else {
             // すでに仮メダルがDB保存済みの場合、API呼び出し前にすでに他タブで確定済みでないかチェック
             try {
-              const existingProvisional = await getMedalWithImage(targetProvisionalId);
-              if (!existingProvisional || !existingProvisional.medal.pendingGeneration) {
-                removePendingMedalGeneration(targetProvisionalId);
-                await refreshMedalsRef.current();
+              const dbMedals = await listMedals('date-desc', 'ALL');
+              const alreadyFinalized = dbMedals.find(
+                (m) =>
+                  m.replacedProvisionalMedalId === targetProvisionalId ||
+                  (m.medalId === targetProvisionalId && !m.pendingGeneration),
+              );
+              if (alreadyFinalized) {
+                await applyAlreadyFinalizedMedal(alreadyFinalized, record.fallbackSvgUrl);
                 return;
               }
             } catch {
@@ -688,6 +745,7 @@ export const App: React.FC<AppProps> = ({
               isMatchingRevealTarget(prev)
                 ? {
                     ...prev!,
+                    rarity: savedMedal.rarity,
                     medal: savedMedal,
                     imageUrl: resolvedImageUrl,
                     mimeType: resolvedMimeType,
@@ -753,18 +811,90 @@ export const App: React.FC<AppProps> = ({
   useEffect(() => {
     isMountedRef.current = true;
     const cancelToken = { cancelled: false };
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let hadDbReadFailure = false;
     const isCancelled = () => cancelToken.cancelled || !isMountedRef.current;
     const seq = ++crackGenerationSeqRef.current;
 
-    void (async () => {
-      const pendingRecords = (await loadPendingRecordsFromDbAndStorage()).filter(
+    const runPendingRecovery = async (): Promise<void> => {
+      const {
+        records: loadedRecords,
+        dbReadFailed,
+        finalizedMedals,
+      } = await loadPendingRecordsFromDbAndStorage();
+      if (isCancelled()) return;
+
+      if (dbReadFailed) {
+        hadDbReadFailure = true;
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          if (!isCancelled()) {
+            void runPendingRecovery();
+          }
+        }, 40);
+        return;
+      }
+
+      if (hadDbReadFailure) {
+        void refreshMedalsRef.current();
+      }
+
+      const pendingRecords = loadedRecords.filter(
         (rec) => !inFlightProvisionalIdsRef.current.has(rec.provisionalMedal.medalId),
       );
-      if (isCancelled() || pendingRecords.length === 0) return;
+
+      if (pendingRecords.length === 0) {
+        const currentReveal = revealStateRef.current;
+        if (currentReveal && currentReveal.isGenerating) {
+          const alreadyFinalized = finalizedMedals.get(currentReveal.provisionalMedalId);
+          if (alreadyFinalized) {
+            let finalizedImgUrl = currentReveal.imageUrl;
+            let finalizedMime = currentReveal.mimeType;
+            try {
+              const existingImg = await loadMedalImageRef.current(alreadyFinalized.imageBlobKey);
+              if (existingImg && typeof existingImg.imageData === 'string') {
+                finalizedImgUrl = existingImg.imageData;
+                finalizedMime = existingImg.mimeType;
+              }
+            } catch {
+              // ignore image load failure
+            }
+            if (!isCancelled() && crackGenerationSeqRef.current === seq) {
+              updateRevealState((prev) =>
+                prev && prev.provisionalMedalId === currentReveal.provisionalMedalId
+                  ? {
+                      ...prev,
+                      rarity: alreadyFinalized.rarity,
+                      medal: alreadyFinalized,
+                      imageUrl: finalizedImgUrl,
+                      mimeType: finalizedMime,
+                      isGenerating: false,
+                      isSaving: false,
+                      hasPersistedInDb: true,
+                      saveError: null,
+                      statusNote: null,
+                      isFallback: false,
+                    }
+                  : prev,
+              );
+            }
+          } else if (!isCancelled() && crackGenerationSeqRef.current === seq) {
+            updateRevealState((prev) =>
+              prev && prev.provisionalMedalId === currentReveal.provisionalMedalId ? null : prev,
+            );
+          }
+        }
+        return;
+      }
 
       const latestRecord = pendingRecords[pendingRecords.length - 1];
       if (!isCancelled() && crackGenerationSeqRef.current === seq) {
-        updateRevealState((prev) => prev ?? createInitialRevealStateFromRecord(latestRecord));
+        updateRevealState((prev) => {
+          if (prev && prev.provisionalMedalId !== latestRecord.provisionalMedal.medalId) {
+            return createInitialRevealStateFromRecord(latestRecord);
+          }
+          return prev ?? createInitialRevealStateFromRecord(latestRecord);
+        });
       }
 
       for (let i = 0; i < pendingRecords.length; i++) {
@@ -774,11 +904,16 @@ export const App: React.FC<AppProps> = ({
         const isLatest = i === pendingRecords.length - 1;
         await executeMedalGenerationFlow(record, isLatest ? seq : -1, isCancelled);
       }
-    })();
+    };
+
+    void runPendingRecovery();
 
     return () => {
       cancelToken.cancelled = true;
       isMountedRef.current = false;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
       }
@@ -916,6 +1051,20 @@ export const App: React.FC<AppProps> = ({
         requireReplaceTarget: Boolean(targetUnsavedRecord?.provisionalSavedInDb),
       });
 
+      let resolvedImageUrl = currentImageUrl;
+      let resolvedMimeType = currentMimeType;
+      if (savedMedal.medalId !== currentMedal.medalId) {
+        try {
+          const existingImg = await loadMedalImageRef.current(savedMedal.imageBlobKey);
+          if (existingImg && typeof existingImg.imageData === 'string') {
+            resolvedImageUrl = existingImg.imageData;
+            resolvedMimeType = existingImg.mimeType;
+          }
+        } catch {
+          // ignore image load failure
+        }
+      }
+
       removePendingMedalGeneration(currentProvisionalId);
       syncUnsavedRecords(
         unsavedRecordsRef.current.filter(
@@ -1001,7 +1150,10 @@ export const App: React.FC<AppProps> = ({
           isStillTargetActive(prev)
             ? {
                 ...prev!,
+                rarity: savedMedal.rarity,
                 medal: savedMedal,
+                imageUrl: resolvedImageUrl,
+                mimeType: resolvedMimeType,
                 isSaving: false,
                 hasPersistedInDb: true,
                 saveError: null,
