@@ -22,6 +22,11 @@ export interface SaveMedalWithImageInput {
   mimeType?: string;
   /** 仮メダルを実メダルへ置き換える際に同一トランザクション内で削除する旧 medalId */
   replaceMedalId?: string;
+  /**
+   * true の場合、replaceMedalId の仮メダルが DB 内に未確定状態で存在する場合のみ置換・新規保存を行う。
+   * 仮メダルがすでに削除または確定済みの場合は、他タブ等で確定済みとみなして新規保存をスキップする。
+   */
+  requireReplaceTarget?: boolean;
 }
 
 export interface MedalWithImageResult {
@@ -266,23 +271,65 @@ export function sortAndFilterMedals(
   });
 }
 
+function findAlreadyFinalizedMedal(
+  items: Iterable<MedalItem>,
+  provisionalMedalId: string,
+): MedalItem | undefined {
+  for (const item of items) {
+    if (
+      item.replacedProvisionalMedalId === provisionalMedalId ||
+      (item.medalId === provisionalMedalId && !item.pendingGeneration)
+    ) {
+      return item;
+    }
+  }
+  return undefined;
+}
+
 /**
  * MedalItem メタデータと生成メダル画像（Blob / Base64）を保存（新規または更新）する。
  * 既存メダルを更新する際に `imageBlobKey` が変更された場合は、古い画像レコードも自動削除する。
+ * `replaceMedalId` 指定時は同一トランザクション内で確定状態を確認し、二重確定・重複保存を防止する。
  */
 export async function saveMedalWithImage({
   medal,
   imageData,
   mimeType = 'image/png',
   replaceMedalId,
+  requireReplaceTarget = false,
 }: SaveMedalWithImageInput): Promise<MedalItem> {
+  const isFinalizingReplacement = Boolean(replaceMedalId);
+  const { pendingGeneration: rawPendingGeneration, ...medalWithoutPending } = medal;
   const normalizedMedal: MedalItem = {
-    ...medal,
+    ...(isFinalizingReplacement ? medalWithoutPending : medal),
     upgradeLevel: Number.isFinite(medal.upgradeLevel) ? medal.upgradeLevel : 0,
+    ...(replaceMedalId ? { replacedProvisionalMedalId: replaceMedalId } : {}),
+    ...(!isFinalizingReplacement && rawPendingGeneration
+      ? { pendingGeneration: rawPendingGeneration }
+      : {}),
   };
+
+  const targetProvisionalId =
+    replaceMedalId ?? (normalizedMedal.pendingGeneration ? normalizedMedal.medalId : undefined);
 
   const db = await tryOpenNativeDatabase();
   if (!db) {
+    if (targetProvisionalId) {
+      const alreadyFinalized = findAlreadyFinalizedMedal(
+        memoryMedalStore.values(),
+        targetProvisionalId,
+      );
+      if (alreadyFinalized) {
+        return alreadyFinalized;
+      }
+      if (replaceMedalId && requireReplaceTarget) {
+        const currentProvisional = memoryMedalStore.get(replaceMedalId);
+        if (!currentProvisional || !currentProvisional.pendingGeneration) {
+          return normalizedMedal;
+        }
+      }
+    }
+
     // DB側の削除が完了するまで memoryDeletedMedalIds の記録は消さずに保持する
     const prev = memoryMedalStore.get(normalizedMedal.medalId);
     if (prev && prev.imageBlobKey !== normalizedMedal.imageBlobKey) {
@@ -323,10 +370,11 @@ export async function saveMedalWithImage({
   }
 
   try {
-    await new Promise<void>((resolve, reject) => {
+    return await new Promise<MedalItem>((resolve, reject) => {
       const tx = db.transaction([MEDAL_METADATA_STORE, MEDAL_IMAGE_STORE], 'readwrite');
       const medalStore = tx.objectStore(MEDAL_METADATA_STORE);
       const imageStore = tx.objectStore(MEDAL_IMAGE_STORE);
+      let resolvedMedal: MedalItem = normalizedMedal;
 
       const abortAndReject = (err: unknown) => {
         try {
@@ -337,10 +385,27 @@ export async function saveMedalWithImage({
         reject(err instanceof Error ? err : new Error('メダルデータの保存に失敗しました'));
       };
 
-      const getExistingReq = medalStore.get(normalizedMedal.medalId);
-      getExistingReq.onsuccess = () => {
+      const getAllReq = medalStore.getAll();
+      getAllReq.onsuccess = () => {
         try {
-          const existing = getExistingReq.result as MedalItem | undefined;
+          const allItems = (getAllReq.result as MedalItem[]) ?? [];
+
+          if (targetProvisionalId) {
+            const alreadyFinalized = findAlreadyFinalizedMedal(allItems, targetProvisionalId);
+            if (alreadyFinalized) {
+              resolvedMedal = alreadyFinalized;
+              return;
+            }
+            if (replaceMedalId && requireReplaceTarget) {
+              const currentProvisional = allItems.find((item) => item.medalId === replaceMedalId);
+              if (!currentProvisional || !currentProvisional.pendingGeneration) {
+                resolvedMedal = normalizedMedal;
+                return;
+              }
+            }
+          }
+
+          const existing = allItems.find((item) => item.medalId === normalizedMedal.medalId);
           medalStore.put(normalizedMedal);
 
           if (imageData !== undefined) {
@@ -374,30 +439,24 @@ export async function saveMedalWithImage({
           }
 
           if (replaceMedalId && replaceMedalId !== normalizedMedal.medalId) {
-            const getReplacedReq = medalStore.get(replaceMedalId);
-            getReplacedReq.onsuccess = () => {
-              try {
-                const replaced = getReplacedReq.result as MedalItem | undefined;
-                if (replaced && replaced.imageBlobKey !== normalizedMedal.imageBlobKey) {
-                  imageStore.delete(replaced.imageBlobKey);
-                }
-                medalStore.delete(replaceMedalId);
-              } catch (err) {
-                abortAndReject(err);
-              }
-            };
+            const replaced = allItems.find((item) => item.medalId === replaceMedalId);
+            if (replaced && replaced.imageBlobKey !== normalizedMedal.imageBlobKey) {
+              imageStore.delete(replaced.imageBlobKey);
+            }
+            medalStore.delete(replaceMedalId);
           }
         } catch (err) {
           abortAndReject(err);
         }
       };
+      getAllReq.onerror = () =>
+        abortAndReject(getAllReq.error ?? new Error('メダルデータの確認に失敗しました'));
 
-      tx.oncomplete = () => resolve();
+      tx.oncomplete = () => resolve(resolvedMedal);
       tx.onerror = () => reject(tx.error ?? new Error('メダルデータの保存に失敗しました'));
       tx.onabort = () =>
         reject(tx.error ?? new Error('メダルデータの保存トランザクションが中断されました'));
     });
-    return normalizedMedal;
   } finally {
     db.close();
   }

@@ -590,10 +590,10 @@ describe('4. App 一気通貫統合テスト (カプセル開封 → レア度�
 
     await waitFor(() => {
       expect(firstGenerateMedalFn).toHaveBeenCalledTimes(1);
+      expect(medalsAtApiCallTime).toHaveLength(1);
     });
 
     // API呼び出し時点で、すでに仮メダルがIndexedDBに保存され、生成待ち状態もlocalStorageに永続化されていること
-    expect(medalsAtApiCallTime).toHaveLength(1);
     expect(medalsAtApiCallTime[0].taskTitle).toBe('企画書ドラフトを提出する');
     expect(medalsAtApiCallTime[0].rarity).toBe('SSR');
     const provisionalId = medalsAtApiCallTime[0].medalId;
@@ -741,5 +741,411 @@ describe('4. App 一気通貫統合テスト (カプセル開封 → レア度�
     expect(
       screen.getByTestId('collection-medal-card-medal_ssr_server_issued_777'),
     ).toBeInTheDocument();
+  });
+
+  it('【再レビュー指摘1回帰】localStorageの読み書きが例外を投げて失敗する環境でも、IndexedDBの仮メダルから生成待ち状態を検出して再読み込み後に自動再開・確定できる', async () => {
+    let medalsInDbBeforeReload: MedalItem[] = [];
+
+    // localStorage の getItem / setItem / removeItem がすべて例外を投げる環境を再現
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+    });
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('SecurityError', 'SecurityError');
+    });
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+      throw new DOMException('SecurityError', 'SecurityError');
+    });
+
+    const firstGenerateMedalFn = vi.fn().mockImplementation(async () => {
+      medalsInDbBeforeReload = await listMedals('date-desc', 'ALL');
+      return new Promise<MedalGenerateResponse>(() => {
+        // 応答前にページ再読み込みされる状況を再現
+      });
+    });
+
+    const { unmount } = render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: firstGenerateMedalFn,
+      }),
+    );
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+
+    await waitFor(() => {
+      expect(firstGenerateMedalFn).toHaveBeenCalledTimes(1);
+      expect(medalsInDbBeforeReload).toHaveLength(1);
+    });
+
+    // localStorage が失敗していても、IndexedDB の仮メダル自体に pendingGeneration 情報が保存されていること
+    expect(medalsInDbBeforeReload[0].pendingGeneration).toBeDefined();
+    expect(medalsInDbBeforeReload[0].pendingGeneration?.coinsEarned).toBe(30);
+    const provisionalId = medalsInDbBeforeReload[0].medalId;
+
+    // ページ再読み込み（アンマウント＆再マウント）
+    unmount();
+
+    const secondGenerateMedalFn = vi.fn().mockResolvedValue({
+      medal: {
+        medalId: 'medal_ssr_recovered_from_idb_only',
+        taskId: 'cap_demo_001',
+        taskTitle: '企画書ドラフトを提出する',
+        medalName: '「企画書ドラフトを提出する」IDB正本復元の虹彩勲章',
+        engravedText: 'DRAFT CONQUEROR',
+        rarity: 'SSR',
+        imageBlobKey: 'img_medal_ssr_recovered_from_idb_only',
+        modelUsed: 'gemini-nano-banana-2.1',
+        unlockedAt: '2026-10-25T12:15:00.000Z',
+        upgradeLevel: 0,
+      },
+      imageDataUrl: 'data:image/jpeg;base64,RECOVERED_FROM_IDB_ONLY_IMG',
+      imageBase64: 'RECOVERED_FROM_IDB_ONLY_IMG',
+      mimeType: 'image/jpeg',
+      thinkingLevel: 'medium',
+      frameReference: {
+        rarity: 'SSR',
+        frameId: 'frame_ssr_hologram',
+        frameNameJa: 'ホログラム枠',
+        frameNameEn: 'Hologram Frame',
+      },
+    } satisfies MedalGenerateResponse);
+
+    render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: secondGenerateMedalFn,
+      }),
+    );
+
+    // localStorage が使えなくても IndexedDB の仮メダルから復元され、生成画像がモーダルに表示されること
+    await waitFor(() => {
+      expect(secondGenerateMedalFn).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('medal-reveal-modal')).toBeInTheDocument();
+      expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute(
+        'src',
+        'data:image/jpeg;base64,RECOVERED_FROM_IDB_ONLY_IMG',
+      );
+    });
+
+    const finalMedals = await listMedals('date-desc', 'ALL');
+    expect(finalMedals).toHaveLength(1);
+    expect(finalMedals[0].medalId).toBe('medal_ssr_recovered_from_idb_only');
+    expect(finalMedals[0].medalId).not.toBe(provisionalId);
+    expect(finalMedals[0].pendingGeneration).toBeUndefined();
+  });
+
+  it('【再レビュー指摘2回帰】同じ生成待ちレコードを2つのタブ（2回の復元処理）が読み取って異なる実メダルIDを生成しても、二重登録されず実メダルが1つだけ残る', async () => {
+    const initialGenerateFn = vi.fn().mockImplementation(
+      () =>
+        new Promise<MedalGenerateResponse>(() => {
+          // 応答前にアンマウント
+        }),
+    );
+
+    const { unmount: unmountInitial } = render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: initialGenerateFn,
+      }),
+    );
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+
+    await waitFor(() => {
+      expect(initialGenerateFn).toHaveBeenCalledTimes(1);
+    });
+
+    const provisionalMedals = await listMedals('date-desc', 'ALL');
+    expect(provisionalMedals).toHaveLength(1);
+    expect(provisionalMedals[0].pendingGeneration).toBeDefined();
+    unmountInitial();
+
+    // タブ1とタブ2が同時に同じ生成待ちレコードを読み取り、それぞれ異なる実メダルIDを返す状況を再現
+    let resolveTab1!: (value: MedalGenerateResponse) => void;
+    let resolveTab2!: (value: MedalGenerateResponse) => void;
+
+    const tab1GenerateFn = vi.fn().mockImplementation(
+      () =>
+        new Promise<MedalGenerateResponse>((resolve) => {
+          resolveTab1 = resolve;
+        }),
+    );
+    const tab2GenerateFn = vi.fn().mockImplementation(
+      () =>
+        new Promise<MedalGenerateResponse>((resolve) => {
+          resolveTab2 = resolve;
+        }),
+    );
+
+    const tab1 = render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: tab1GenerateFn,
+      }),
+    );
+    const tab2 = render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: tab2GenerateFn,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(tab1GenerateFn).toHaveBeenCalledTimes(1);
+      expect(tab2GenerateFn).toHaveBeenCalledTimes(1);
+    });
+
+    // タブ1が先に確定し、続いてタブ2が別の実メダルIDで確定を試みる
+    resolveTab1({
+      medal: {
+        medalId: 'medal_ssr_tab_1_winner',
+        taskId: 'cap_demo_001',
+        taskTitle: '企画書ドラフトを提出する',
+        medalName: 'タブ1で確定した勲章',
+        engravedText: 'TAB ONE WINNER',
+        rarity: 'SSR',
+        imageBlobKey: 'img_medal_ssr_tab_1_winner',
+        modelUsed: 'gemini-nano-banana-2.1',
+        unlockedAt: '2026-10-25T12:20:00.000Z',
+        upgradeLevel: 0,
+      },
+      imageDataUrl: 'data:image/jpeg;base64,TAB_1_WINNER_IMAGE',
+      imageBase64: 'TAB_1_WINNER_IMAGE',
+      mimeType: 'image/jpeg',
+      thinkingLevel: 'medium',
+      frameReference: {
+        rarity: 'SSR',
+        frameId: 'frame_ssr_hologram',
+        frameNameJa: 'ホログラム枠',
+        frameNameEn: 'Hologram Frame',
+      },
+    });
+
+    resolveTab2({
+      medal: {
+        medalId: 'medal_ssr_tab_2_duplicate',
+        taskId: 'cap_demo_001',
+        taskTitle: '企画書ドラフトを提出する',
+        medalName: 'タブ2の後発重複勲章',
+        engravedText: 'TAB TWO DUPLICATE',
+        rarity: 'SSR',
+        imageBlobKey: 'img_medal_ssr_tab_2_duplicate',
+        modelUsed: 'gemini-nano-banana-2.1',
+        unlockedAt: '2026-10-25T12:20:01.000Z',
+        upgradeLevel: 0,
+      },
+      imageDataUrl: 'data:image/jpeg;base64,TAB_2_DUPLICATE_IMAGE',
+      imageBase64: 'TAB_2_DUPLICATE_IMAGE',
+      mimeType: 'image/jpeg',
+      thinkingLevel: 'medium',
+      frameReference: {
+        rarity: 'SSR',
+        frameId: 'frame_ssr_hologram',
+        frameNameJa: 'ホログラム枠',
+        frameNameEn: 'Hologram Frame',
+      },
+    });
+
+    // 両方のタブで確定処理が完了するのを待つ
+    await waitFor(async () => {
+      const currentMedals = await listMedals('date-desc', 'ALL');
+      expect(currentMedals).toHaveLength(1);
+      expect(currentMedals[0].pendingGeneration).toBeUndefined();
+    });
+
+    const finalMedals = await listMedals('date-desc', 'ALL');
+    expect(finalMedals).toHaveLength(1);
+    expect(finalMedals[0].medalId).toBe('medal_ssr_tab_1_winner');
+
+    const duplicateLookup = await getMedalWithImage('medal_ssr_tab_2_duplicate');
+    expect(duplicateLookup).toBeNull();
+
+    tab1.unmount();
+    tab2.unmount();
+
+    // さらに確定完了後に3つ目のタブが起動しても、すでに確定済みのためAPIは呼ばれないこと
+    const tab3GenerateFn = vi.fn();
+    const tab3 = render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: tab3GenerateFn,
+      }),
+    );
+    expect(tab3GenerateFn).not.toHaveBeenCalled();
+    tab3.unmount();
+  });
+
+  it('【再レビュー指摘3回帰】メダルAの再保存中にモーダルを閉じて別のカプセルBを開封した場合、Aの完了処理がBのrevealStateや図鑑遷移先を上書きしない', async () => {
+    const medalAResponse: MedalGenerateResponse = {
+      medal: {
+        medalId: 'medal_ssr_capsule_a',
+        taskId: 'cap_demo_001',
+        taskTitle: '企画書ドラフトを提出する',
+        medalName: 'カプセルAの黄金勲章',
+        engravedText: 'DRAFT CONQUEROR',
+        rarity: 'SSR',
+        imageBlobKey: 'img_medal_ssr_capsule_a',
+        modelUsed: 'gemini-nano-banana-2.1',
+        unlockedAt: '2026-10-25T12:30:00.000Z',
+        upgradeLevel: 0,
+      },
+      imageDataUrl: 'data:image/jpeg;base64,IMAGE_CAPSULE_A',
+      imageBase64: 'IMAGE_CAPSULE_A',
+      mimeType: 'image/jpeg',
+      thinkingLevel: 'medium',
+      frameReference: {
+        rarity: 'SSR',
+        frameId: 'frame_ssr_hologram',
+        frameNameJa: 'ホログラム枠',
+        frameNameEn: 'Hologram Frame',
+      },
+    };
+
+    const medalBResponse: MedalGenerateResponse = {
+      medal: {
+        medalId: 'medal_ssr_capsule_b',
+        taskId: 'cap_demo_002',
+        taskTitle: '溜まった洗濯物をたたむ',
+        medalName: 'カプセルBのランドリー勲章',
+        engravedText: 'LAUNDRY MASTER',
+        rarity: 'SSR',
+        imageBlobKey: 'img_medal_ssr_capsule_b',
+        modelUsed: 'gemini-nano-banana-2.1',
+        unlockedAt: '2026-10-25T12:31:00.000Z',
+        upgradeLevel: 0,
+      },
+      imageDataUrl: 'data:image/jpeg;base64,IMAGE_CAPSULE_B',
+      imageBase64: 'IMAGE_CAPSULE_B',
+      mimeType: 'image/jpeg',
+      thinkingLevel: 'medium',
+      frameReference: {
+        rarity: 'SSR',
+        frameId: 'frame_ssr_hologram',
+        frameNameJa: 'ホログラム枠',
+        frameNameEn: 'Hologram Frame',
+      },
+    };
+
+    const generateMedalFn = vi
+      .fn()
+      .mockResolvedValueOnce(medalAResponse)
+      .mockResolvedValueOnce(medalBResponse);
+
+    // 1. カプセルAの初回保存だけ失敗させる
+    let failPutForA = true;
+    const originalPut = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<IDBObjectStore['put']>
+    ) {
+      if (failPutForA) {
+        throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+      }
+      return originalPut.apply(this, args);
+    });
+
+    let releaseRetryA!: () => void;
+    const retryAGate = new Promise<void>((resolve) => {
+      releaseRetryA = resolve;
+    });
+    let delayNextOpenForRetryA = false;
+    const originalOpen = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+    vi.spyOn(globalThis.indexedDB, 'open').mockImplementation(
+      (...args: Parameters<typeof globalThis.indexedDB.open>) => {
+        if (delayNextOpenForRetryA) {
+          delayNextOpenForRetryA = false;
+          const delayedReq = {} as IDBOpenDBRequest;
+          void retryAGate.then(() => {
+            const realReq = originalOpen(...args);
+            realReq.onsuccess = (ev) => {
+              (delayedReq as { result: IDBDatabase }).result = realReq.result;
+              delayedReq.onsuccess?.call(realReq, ev);
+            };
+            realReq.onerror = (ev) => {
+              delayedReq.onerror?.call(realReq, ev);
+            };
+          });
+          return delayedReq;
+        }
+        return originalOpen(...args);
+      },
+    );
+
+    render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn,
+      }),
+    );
+
+    // カプセルA（「企画書ドラフトを提出する」）を開封
+    const capsuleBtnA = screen.getByTestId('active-capsule-button');
+    fireEvent.click(capsuleBtnA);
+    fireEvent.click(capsuleBtnA);
+    fireEvent.click(capsuleBtnA);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('reveal-save-error')).toHaveTextContent('保存できませんでした');
+    });
+
+    // 2. 容量エラーを解除し、メダルAの「図鑑に再保存する」を押すが、完了を一旦保留する
+    failPutForA = false;
+    delayNextOpenForRetryA = true;
+
+    fireEvent.click(screen.getByTestId('retry-save-medal-button'));
+
+    // 3. メダルAの再保存中にモーダルを閉じ、次のカプセルB（「溜まった洗濯物をたたむ」）を開封する
+    fireEvent.click(screen.getByTestId('close-reveal-modal-button'));
+
+    const capsuleBtnB = screen.getByTestId('active-capsule-button');
+    fireEvent.click(capsuleBtnB);
+    fireEvent.click(capsuleBtnB);
+    fireEvent.click(capsuleBtnB);
+
+    // カプセルBのメダル生成・保存が完了してモーダルに表示されるのを待つ
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-reveal-modal')).toBeInTheDocument();
+      expect(screen.getByTestId('reveal-task-title')).toHaveTextContent('溜まった洗濯物をたたむ');
+      expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute(
+        'src',
+        'data:image/jpeg;base64,IMAGE_CAPSULE_B',
+      );
+    });
+
+    // 4. ここで保留していたメダルAの再保存を完了させる
+    releaseRetryA();
+
+    await waitFor(async () => {
+      const stored = await listMedals('date-desc', 'ALL');
+      expect(stored).toHaveLength(2);
+    });
+
+    // Aの完了処理がBのモーダル表示（タスク名・刻印・画像・ステータスメモ）を上書きしていないことを確認
+    expect(screen.getByTestId('reveal-task-title')).toHaveTextContent('溜まった洗濯物をたたむ');
+    expect(screen.getByTestId('reveal-engraved-text')).toHaveTextContent('LAUNDRY MASTER');
+    expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute(
+      'src',
+      'data:image/jpeg;base64,IMAGE_CAPSULE_B',
+    );
+    expect(screen.queryByTestId('reveal-status-note')).not.toBeInTheDocument();
+
+    // 「図鑑で見る」を押した際、メダルAではなく現在表示中のメダルBの詳細が開くことを確認
+    fireEvent.click(screen.getByTestId('open-collection-from-modal-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-collection-drawer')).toBeInTheDocument();
+      expect(screen.getByTestId('collection-medal-detail')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('detail-medal-name')).toHaveTextContent('カプセルBのランドリー勲章');
+    expect(screen.getByTestId('detail-engraved-text')).toHaveTextContent('LAUNDRY MASTER');
+    expect(screen.getByTestId('detail-task-title')).toHaveTextContent('溜まった洗濯物をたたむ');
   });
 });
