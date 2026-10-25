@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Award, PlusCircle, RefreshCw, Timer, Trash2 } from 'lucide-react';
 import { CapsuleMachineVisual } from './components/capsule-machine-visual';
 import { CapsuleStage, type StageToastNotification } from './components/capsule-stage';
@@ -14,8 +14,36 @@ import {
   type MedalGenerateRequestPayload,
   type MedalGenerateResponse,
 } from './lib/api-client';
+import { getSafeLocalStorage } from './lib/capsule-store-storage';
 import { createFallbackMedalSvgDataUrl } from '../server/lib/medal-frames';
-import type { CapsuleTask, MedalItem, MedalRarity } from '../shared/schemas';
+import {
+  isValidMedalRarity,
+  type CapsuleTask,
+  type MedalItem,
+  type MedalRarity,
+} from '../shared/schemas';
+
+export const PENDING_MEDAL_GENERATIONS_STORAGE_KEY = 'capsule_tasks_pending_medals_v1';
+
+const MEDAL_SAVE_ERROR_MESSAGE =
+  '記念メダルを図鑑に保存できませんでした。空き容量を確認して再保存してください。';
+
+export interface PendingMedalSaveTarget {
+  medal: MedalItem;
+  imageDataUrl: string;
+  mimeType: string;
+  isFallback: boolean;
+}
+
+export interface PendingMedalGenerationRecord {
+  provisionalMedal: MedalItem;
+  fallbackSvgUrl: string;
+  medalPrompt: string;
+  coinsEarned: number;
+  todayCombo: number;
+  provisionalSavedInDb: boolean;
+  pendingSaveTarget?: PendingMedalSaveTarget;
+}
 
 export interface AppProps {
   /** テスト等でのメダル生成API関数差し替え用 */
@@ -32,8 +60,141 @@ interface RevealModalState {
   todayCombo: number;
   medal: MedalItem | null;
   imageUrl: string | null;
+  mimeType: string;
   isGenerating: boolean;
+  isSaving: boolean;
+  hasPersistedInDb: boolean;
+  saveError: string | null;
   statusNote: string | null;
+  provisionalMedalId: string;
+  isFallback: boolean;
+}
+
+function isValidMedalItemCandidate(value: unknown): value is MedalItem {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.medalId === 'string' &&
+    record.medalId.length > 0 &&
+    typeof record.taskId === 'string' &&
+    typeof record.taskTitle === 'string' &&
+    typeof record.medalName === 'string' &&
+    typeof record.engravedText === 'string' &&
+    isValidMedalRarity(record.rarity) &&
+    typeof record.imageBlobKey === 'string' &&
+    typeof record.modelUsed === 'string' &&
+    typeof record.unlockedAt === 'string' &&
+    typeof record.upgradeLevel === 'number'
+  );
+}
+
+function readPendingMedalGenerations(): PendingMedalGenerationRecord[] {
+  const storage = getSafeLocalStorage();
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const result: PendingMedalGenerationRecord[] = [];
+    for (const item of parsed) {
+      if (typeof item !== 'object' || item === null) continue;
+      const candidate = item as Record<string, unknown>;
+      if (!isValidMedalItemCandidate(candidate.provisionalMedal)) continue;
+      const provisionalMedal = candidate.provisionalMedal;
+      const fallbackSvgUrl =
+        typeof candidate.fallbackSvgUrl === 'string' && candidate.fallbackSvgUrl.length > 0
+          ? candidate.fallbackSvgUrl
+          : createFallbackMedalSvgDataUrl(provisionalMedal.rarity, provisionalMedal.engravedText);
+      const medalPrompt = typeof candidate.medalPrompt === 'string' ? candidate.medalPrompt : '';
+      const coinsEarned =
+        typeof candidate.coinsEarned === 'number' && Number.isFinite(candidate.coinsEarned)
+          ? candidate.coinsEarned
+          : 30;
+      const todayCombo =
+        typeof candidate.todayCombo === 'number' && Number.isFinite(candidate.todayCombo)
+          ? candidate.todayCombo
+          : 1;
+      const provisionalSavedInDb = Boolean(candidate.provisionalSavedInDb);
+
+      let pendingSaveTarget: PendingMedalSaveTarget | undefined;
+      if (typeof candidate.pendingSaveTarget === 'object' && candidate.pendingSaveTarget !== null) {
+        const targetObj = candidate.pendingSaveTarget as Record<string, unknown>;
+        if (
+          isValidMedalItemCandidate(targetObj.medal) &&
+          typeof targetObj.imageDataUrl === 'string' &&
+          targetObj.imageDataUrl.length > 0 &&
+          typeof targetObj.mimeType === 'string'
+        ) {
+          pendingSaveTarget = {
+            medal: targetObj.medal,
+            imageDataUrl: targetObj.imageDataUrl,
+            mimeType: targetObj.mimeType,
+            isFallback: Boolean(targetObj.isFallback),
+          };
+        }
+      }
+
+      result.push({
+        provisionalMedal,
+        fallbackSvgUrl,
+        medalPrompt,
+        coinsEarned,
+        todayCombo,
+        provisionalSavedInDb,
+        ...(pendingSaveTarget ? { pendingSaveTarget } : {}),
+      });
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}
+
+function writePendingMedalGenerations(records: PendingMedalGenerationRecord[]): void {
+  const storage = getSafeLocalStorage();
+  if (!storage) return;
+  try {
+    if (records.length === 0) {
+      storage.removeItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY);
+      return;
+    }
+    storage.setItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY, JSON.stringify(records));
+  } catch {
+    // 画像データが大きすぎて localStorage 容量を超過した場合は、生成待ちメタデータのみ退避する
+    try {
+      const lightweight = records.map((item) => ({
+        provisionalMedal: item.provisionalMedal,
+        fallbackSvgUrl: item.fallbackSvgUrl,
+        medalPrompt: item.medalPrompt,
+        coinsEarned: item.coinsEarned,
+        todayCombo: item.todayCombo,
+        provisionalSavedInDb: item.provisionalSavedInDb,
+      }));
+      storage.setItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY, JSON.stringify(lightweight));
+    } catch {
+      // ignore localStorage write failure
+    }
+  }
+}
+
+function upsertPendingMedalGeneration(record: PendingMedalGenerationRecord): void {
+  const current = readPendingMedalGenerations();
+  const idx = current.findIndex(
+    (item) => item.provisionalMedal.medalId === record.provisionalMedal.medalId,
+  );
+  if (idx >= 0) {
+    current[idx] = record;
+  } else {
+    current.push(record);
+  }
+  writePendingMedalGenerations(current);
+}
+
+function removePendingMedalGeneration(provisionalMedalId: string): void {
+  const current = readPendingMedalGenerations();
+  const next = current.filter((item) => item.provisionalMedal.medalId !== provisionalMedalId);
+  writePendingMedalGenerations(next);
 }
 
 function extractClientEngravedText(medalPrompt: string, taskTitle: string): string {
@@ -87,13 +248,68 @@ export const App: React.FC<AppProps> = ({
   const [isSupplySheetOpen, setIsSupplySheetOpen] = useState<boolean>(false);
   const [isCollectionDrawerOpen, setIsCollectionDrawerOpen] = useState<boolean>(false);
   const [selectedCollectionMedalId, setSelectedCollectionMedalId] = useState<string | null>(null);
-  const [revealState, setRevealState] = useState<RevealModalState | null>(null);
+  const [revealState, setRevealState] = useState<RevealModalState | null>(() => {
+    const pendingRecords = readPendingMedalGenerations();
+    if (pendingRecords.length === 0) return null;
+    const latestRecord = pendingRecords[pendingRecords.length - 1];
+    return {
+      isOpen: true,
+      taskTitle: latestRecord.provisionalMedal.taskTitle,
+      rarity: latestRecord.provisionalMedal.rarity,
+      coinsEarned: latestRecord.coinsEarned,
+      todayCombo: latestRecord.todayCombo,
+      medal: latestRecord.pendingSaveTarget?.medal ?? latestRecord.provisionalMedal,
+      imageUrl: latestRecord.pendingSaveTarget?.imageDataUrl ?? null,
+      mimeType: latestRecord.pendingSaveTarget?.mimeType ?? 'image/svg+xml',
+      isGenerating: !latestRecord.pendingSaveTarget,
+      isSaving: Boolean(latestRecord.pendingSaveTarget),
+      hasPersistedInDb: latestRecord.provisionalSavedInDb && !latestRecord.pendingSaveTarget,
+      saveError: null,
+      statusNote: null,
+      provisionalMedalId: latestRecord.provisionalMedal.medalId,
+      isFallback: latestRecord.pendingSaveTarget?.isFallback ?? false,
+    };
+  });
   const [statusFeedback, setStatusFeedback] =
     useState<string>('カプセルを連打・長押ししてパカッと開封しよう！');
   const [toastNotification, setToastNotification] = useState<StageToastNotification | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isOpeningCapsuleRef = useRef<boolean>(false);
   const crackGenerationSeqRef = useRef<number>(0);
+  const isMountedRef = useRef<boolean>(true);
+  const generateMedalFnRef = useRef(generateMedalFn);
+  const saveMedalRef = useRef(saveMedal);
+  const rarityFilterRef = useRef(rarityFilter);
+  const setRarityFilterRef = useRef(setRarityFilter);
+  const selectedCollectionMedalIdRef = useRef<string | null>(selectedCollectionMedalId);
+  const unsavedRecordsRef = useRef<PendingMedalGenerationRecord[]>([]);
+  const [unsavedRecordCount, setUnsavedRecordCount] = useState<number>(0);
+
+  const syncUnsavedRecords = useCallback((next: PendingMedalGenerationRecord[]) => {
+    unsavedRecordsRef.current = next;
+    setUnsavedRecordCount(next.length);
+  }, []);
+
+  useEffect(() => {
+    generateMedalFnRef.current = generateMedalFn;
+    saveMedalRef.current = saveMedal;
+    rarityFilterRef.current = rarityFilter;
+    setRarityFilterRef.current = setRarityFilter;
+    selectedCollectionMedalIdRef.current = selectedCollectionMedalId;
+  }, [generateMedalFn, saveMedal, rarityFilter, setRarityFilter, selectedCollectionMedalId]);
+
+  const updateSelectedCollectionMedalId = useCallback((medalId: string | null) => {
+    selectedCollectionMedalIdRef.current = medalId;
+    setSelectedCollectionMedalId(medalId);
+  }, []);
+
+  const handleChangeRarityFilter = useCallback(
+    (filter: MedalRarity | 'ALL') => {
+      rarityFilterRef.current = filter;
+      setRarityFilter(filter);
+    },
+    [setRarityFilter],
+  );
 
   const handleOpeningLockChange = (isOpening: boolean) => {
     isOpeningCapsuleRef.current = isOpening;
@@ -111,13 +327,177 @@ export const App: React.FC<AppProps> = ({
     }, 2600);
   };
 
+  const executeMedalGenerationFlow = useCallback(
+    async (
+      initialRecord: PendingMedalGenerationRecord,
+      seq: number,
+      isCancelled: () => boolean,
+    ): Promise<void> => {
+      let record = initialRecord;
+      let saveTarget = record.pendingSaveTarget;
+
+      if (!saveTarget) {
+        if (!record.provisionalSavedInDb) {
+          try {
+            await saveMedalRef.current({
+              medal: record.provisionalMedal,
+              imageData: record.fallbackSvgUrl,
+              mimeType: 'image/svg+xml',
+            });
+            record = { ...record, provisionalSavedInDb: true };
+            upsertPendingMedalGeneration(record);
+            if (!isCancelled() && crackGenerationSeqRef.current === seq) {
+              setRevealState((prev) => (prev ? { ...prev, hasPersistedInDb: true } : null));
+            }
+          } catch {
+            // 仮メダル保存が失敗しても生成API呼び出し自体は継続し、最終保存時にエラー表示・再保存導線を出す
+          }
+        }
+
+        if (isCancelled()) return;
+
+        try {
+          const generated = await generateMedalFnRef.current({
+            taskId: record.provisionalMedal.taskId,
+            taskTitle: record.provisionalMedal.taskTitle,
+            medalPrompt: record.medalPrompt,
+            rarity: record.provisionalMedal.rarity,
+            engravedText: record.provisionalMedal.engravedText,
+          });
+          saveTarget = {
+            medal: generated.medal,
+            imageDataUrl: generated.imageDataUrl,
+            mimeType: generated.mimeType,
+            isFallback: false,
+          };
+        } catch {
+          saveTarget = {
+            medal: record.provisionalMedal,
+            imageDataUrl: record.fallbackSvgUrl,
+            mimeType: 'image/svg+xml',
+            isFallback: true,
+          };
+        }
+
+        if (isCancelled()) return;
+
+        record = { ...record, pendingSaveTarget: saveTarget };
+        upsertPendingMedalGeneration(record);
+      }
+
+      const finalTarget = saveTarget;
+
+      try {
+        const savedMedal = await saveMedalRef.current({
+          medal: finalTarget.medal,
+          imageData: finalTarget.imageDataUrl,
+          mimeType: finalTarget.mimeType,
+          replaceMedalId: record.provisionalMedal.medalId,
+        });
+
+        removePendingMedalGeneration(record.provisionalMedal.medalId);
+        syncUnsavedRecords(
+          unsavedRecordsRef.current.filter(
+            (item) => item.provisionalMedal.medalId !== record.provisionalMedal.medalId,
+          ),
+        );
+
+        if (
+          selectedCollectionMedalIdRef.current === record.provisionalMedal.medalId ||
+          selectedCollectionMedalIdRef.current === finalTarget.medal.medalId
+        ) {
+          if (rarityFilterRef.current !== 'ALL' && rarityFilterRef.current !== savedMedal.rarity) {
+            rarityFilterRef.current = 'ALL';
+            setRarityFilterRef.current('ALL');
+          }
+          updateSelectedCollectionMedalId(savedMedal.medalId);
+        }
+
+        if (!isCancelled() && crackGenerationSeqRef.current === seq) {
+          setRevealState((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  medal: savedMedal,
+                  imageUrl: finalTarget.imageDataUrl,
+                  mimeType: finalTarget.mimeType,
+                  isGenerating: false,
+                  isSaving: false,
+                  hasPersistedInDb: true,
+                  saveError: null,
+                  statusNote: finalTarget.isFallback ? '記念メダルを図鑑に保存しました' : null,
+                  isFallback: finalTarget.isFallback,
+                }
+              : null,
+          );
+        }
+      } catch {
+        const failedRecord: PendingMedalGenerationRecord = {
+          ...record,
+          pendingSaveTarget: finalTarget,
+        };
+        upsertPendingMedalGeneration(failedRecord);
+        const existingIdx = unsavedRecordsRef.current.findIndex(
+          (item) => item.provisionalMedal.medalId === failedRecord.provisionalMedal.medalId,
+        );
+        const nextUnsaved = [...unsavedRecordsRef.current];
+        if (existingIdx >= 0) {
+          nextUnsaved[existingIdx] = failedRecord;
+        } else {
+          nextUnsaved.push(failedRecord);
+        }
+        syncUnsavedRecords(nextUnsaved);
+
+        if (!isCancelled() && crackGenerationSeqRef.current === seq) {
+          setRevealState({
+            isOpen: true,
+            taskTitle: record.provisionalMedal.taskTitle,
+            rarity: finalTarget.medal.rarity,
+            coinsEarned: record.coinsEarned,
+            todayCombo: record.todayCombo,
+            medal: finalTarget.medal,
+            imageUrl: finalTarget.imageDataUrl,
+            mimeType: finalTarget.mimeType,
+            isGenerating: false,
+            isSaving: false,
+            hasPersistedInDb: false,
+            saveError: MEDAL_SAVE_ERROR_MESSAGE,
+            statusNote: null,
+            provisionalMedalId: record.provisionalMedal.medalId,
+            isFallback: finalTarget.isFallback,
+          });
+        }
+      }
+    },
+    [syncUnsavedRecords, updateSelectedCollectionMedalId],
+  );
+
   useEffect(() => {
+    isMountedRef.current = true;
+    const cancelToken = { cancelled: false };
+    const isCancelled = () => cancelToken.cancelled || !isMountedRef.current;
+
+    const pendingRecords = readPendingMedalGenerations();
+    if (pendingRecords.length > 0) {
+      const seq = ++crackGenerationSeqRef.current;
+      void (async () => {
+        for (let i = 0; i < pendingRecords.length; i++) {
+          if (isCancelled()) return;
+          const record = pendingRecords[i];
+          const isLatest = i === pendingRecords.length - 1;
+          await executeMedalGenerationFlow(record, isLatest ? seq : -1, isCancelled);
+        }
+      })();
+    }
+
     return () => {
+      cancelToken.cancelled = true;
+      isMountedRef.current = false;
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
       }
     };
-  }, []);
+  }, [executeMedalGenerationFlow]);
 
   // 画面復帰時やフォーカス時に日付跨ぎをチェックし、ペナルティなしで todayCombo のみ同期する
   useEffect(() => {
@@ -175,6 +555,16 @@ export const App: React.FC<AppProps> = ({
     };
     const fallbackSvgUrl = createFallbackMedalSvgDataUrl(result.awardedRarity, fallbackEngraved);
 
+    const pendingRecord: PendingMedalGenerationRecord = {
+      provisionalMedal,
+      fallbackSvgUrl,
+      medalPrompt: result.crackedTask.medalPrompt,
+      coinsEarned: result.coinsEarned,
+      todayCombo: result.updatedCombo,
+      provisionalSavedInDb: false,
+    };
+    upsertPendingMedalGeneration(pendingRecord);
+
     setRevealState({
       isOpen: true,
       taskTitle: result.crackedTask.title,
@@ -183,58 +573,131 @@ export const App: React.FC<AppProps> = ({
       todayCombo: result.updatedCombo,
       medal: provisionalMedal,
       imageUrl: null,
+      mimeType: 'image/svg+xml',
       isGenerating: true,
+      isSaving: false,
+      hasPersistedInDb: false,
+      saveError: null,
       statusNote: null,
+      provisionalMedalId,
+      isFallback: false,
     });
 
+    await executeMedalGenerationFlow(pendingRecord, seq, () => !isMountedRef.current);
+  };
+
+  const handleRetrySaveMedal = async () => {
+    if (!revealState || !revealState.medal || !revealState.imageUrl || revealState.isSaving) {
+      return;
+    }
+    unlockAudio();
+    const currentMedal = revealState.medal;
+    const currentImageUrl = revealState.imageUrl;
+    const currentMimeType = revealState.mimeType;
+    const currentProvisionalId = revealState.provisionalMedalId;
+
+    setRevealState((prev) => (prev ? { ...prev, isSaving: true, saveError: null } : null));
+
     try {
-      const generated = await generateMedalFn({
-        taskId: result.crackedTask.id,
-        taskTitle: result.crackedTask.title,
-        medalPrompt: result.crackedTask.medalPrompt,
-        rarity: result.awardedRarity,
-        engravedText: fallbackEngraved,
-      });
-
       const savedMedal = await saveMedal({
-        medal: generated.medal,
-        imageData: generated.imageDataUrl,
-        mimeType: generated.mimeType,
+        medal: currentMedal,
+        imageData: currentImageUrl,
+        mimeType: currentMimeType,
+        replaceMedalId: currentProvisionalId,
       });
 
-      if (crackGenerationSeqRef.current === seq) {
-        setRevealState((prev) =>
-          prev
-            ? {
-                ...prev,
-                medal: savedMedal,
-                imageUrl: generated.imageDataUrl,
-                isGenerating: false,
-                statusNote: null,
-              }
-            : null,
-        );
-      }
-    } catch {
-      const savedFallback = await saveMedal({
-        medal: provisionalMedal,
-        imageData: fallbackSvgUrl,
-        mimeType: 'image/svg+xml',
-      }).catch(() => provisionalMedal);
+      removePendingMedalGeneration(currentProvisionalId);
+      syncUnsavedRecords(
+        unsavedRecordsRef.current.filter(
+          (item) => item.provisionalMedal.medalId !== currentProvisionalId,
+        ),
+      );
 
-      if (crackGenerationSeqRef.current === seq) {
-        setRevealState((prev) =>
-          prev
-            ? {
-                ...prev,
-                medal: savedFallback,
-                imageUrl: fallbackSvgUrl,
-                isGenerating: false,
-                statusNote: '記念メダルを図鑑に保存しました',
-              }
-            : null,
-        );
+      if (
+        selectedCollectionMedalIdRef.current === currentProvisionalId ||
+        selectedCollectionMedalIdRef.current === currentMedal.medalId
+      ) {
+        if (rarityFilterRef.current !== 'ALL' && rarityFilterRef.current !== savedMedal.rarity) {
+          handleChangeRarityFilter('ALL');
+        }
+        updateSelectedCollectionMedalId(savedMedal.medalId);
       }
+
+      const remaining = [...unsavedRecordsRef.current];
+      for (const pendingItem of remaining) {
+        if (!pendingItem.pendingSaveTarget) continue;
+        try {
+          const extraSaved = await saveMedal({
+            medal: pendingItem.pendingSaveTarget.medal,
+            imageData: pendingItem.pendingSaveTarget.imageDataUrl,
+            mimeType: pendingItem.pendingSaveTarget.mimeType,
+            replaceMedalId: pendingItem.provisionalMedal.medalId,
+          });
+          removePendingMedalGeneration(pendingItem.provisionalMedal.medalId);
+          syncUnsavedRecords(
+            unsavedRecordsRef.current.filter(
+              (item) => item.provisionalMedal.medalId !== pendingItem.provisionalMedal.medalId,
+            ),
+          );
+          if (
+            selectedCollectionMedalIdRef.current === pendingItem.provisionalMedal.medalId ||
+            selectedCollectionMedalIdRef.current === pendingItem.pendingSaveTarget.medal.medalId
+          ) {
+            if (
+              rarityFilterRef.current !== 'ALL' &&
+              rarityFilterRef.current !== extraSaved.rarity
+            ) {
+              handleChangeRarityFilter('ALL');
+            }
+            updateSelectedCollectionMedalId(extraSaved.medalId);
+          }
+        } catch {
+          setRevealState({
+            isOpen: true,
+            taskTitle: pendingItem.provisionalMedal.taskTitle,
+            rarity: pendingItem.pendingSaveTarget.medal.rarity,
+            coinsEarned: pendingItem.coinsEarned,
+            todayCombo: pendingItem.todayCombo,
+            medal: pendingItem.pendingSaveTarget.medal,
+            imageUrl: pendingItem.pendingSaveTarget.imageDataUrl,
+            mimeType: pendingItem.pendingSaveTarget.mimeType,
+            isGenerating: false,
+            isSaving: false,
+            hasPersistedInDb: false,
+            saveError: MEDAL_SAVE_ERROR_MESSAGE,
+            statusNote: null,
+            provisionalMedalId: pendingItem.provisionalMedal.medalId,
+            isFallback: pendingItem.pendingSaveTarget.isFallback,
+          });
+          return;
+        }
+      }
+
+      setRevealState((prev) =>
+        prev
+          ? {
+              ...prev,
+              medal: savedMedal,
+              isSaving: false,
+              hasPersistedInDb: true,
+              saveError: null,
+              statusNote: '記念メダルを図鑑に保存しました',
+            }
+          : null,
+      );
+      setStatusFeedback('記念メダルを図鑑に保存しました！');
+    } catch {
+      setRevealState((prev) =>
+        prev
+          ? {
+              ...prev,
+              isSaving: false,
+              hasPersistedInDb: false,
+              saveError: MEDAL_SAVE_ERROR_MESSAGE,
+              statusNote: null,
+            }
+          : null,
+      );
     }
   };
 
@@ -283,7 +746,7 @@ export const App: React.FC<AppProps> = ({
 
   const handleOpenCollectionDrawer = (initialMedalId: string | null = null) => {
     unlockAudio();
-    setSelectedCollectionMedalId(initialMedalId);
+    updateSelectedCollectionMedalId(initialMedalId);
     setIsCollectionDrawerOpen(true);
     setStatusFeedback('オリジナル記念メダル図鑑（N / R / SR / SSR）');
   };
@@ -297,7 +760,19 @@ export const App: React.FC<AppProps> = ({
   };
 
   const handleOpenCollectionFromModal = () => {
-    const targetMedalId = revealState?.medal?.medalId ?? null;
+    if (
+      !revealState ||
+      !revealState.hasPersistedInDb ||
+      revealState.saveError ||
+      revealState.isSaving
+    ) {
+      return;
+    }
+    const targetMedalId = revealState.medal?.medalId ?? null;
+    const targetRarity = revealState.medal?.rarity ?? revealState.rarity;
+    if (rarityFilterRef.current !== 'ALL' && rarityFilterRef.current !== targetRarity) {
+      handleChangeRarityFilter('ALL');
+    }
     setRevealState((prev) => (prev ? { ...prev, isOpen: false } : null));
     handleOpenCollectionDrawer(targetMedalId);
   };
@@ -344,6 +819,48 @@ export const App: React.FC<AppProps> = ({
           >
             {storageError}
           </p>
+        )}
+        {(Boolean(revealState?.saveError) || unsavedRecordCount > 0) && !revealState?.isOpen && (
+          <div
+            role="alert"
+            data-testid="unsaved-medal-alert"
+            className="mx-3 flex shrink-0 items-center justify-between gap-2 rounded-lg border-2 border-[#991B1B] bg-[#FFE2DE] px-3 py-1.5 text-xs font-bold text-[#991B1B]"
+          >
+            <span className="truncate">未保存の記念メダルがあります</span>
+            <button
+              type="button"
+              onClick={() => {
+                if (revealState?.saveError) {
+                  setRevealState((prev) => (prev ? { ...prev, isOpen: true } : null));
+                  return;
+                }
+                const target = unsavedRecordsRef.current[unsavedRecordsRef.current.length - 1];
+                if (target?.pendingSaveTarget) {
+                  setRevealState({
+                    isOpen: true,
+                    taskTitle: target.provisionalMedal.taskTitle,
+                    rarity: target.pendingSaveTarget.medal.rarity,
+                    coinsEarned: target.coinsEarned,
+                    todayCombo: target.todayCombo,
+                    medal: target.pendingSaveTarget.medal,
+                    imageUrl: target.pendingSaveTarget.imageDataUrl,
+                    mimeType: target.pendingSaveTarget.mimeType,
+                    isGenerating: false,
+                    isSaving: false,
+                    hasPersistedInDb: false,
+                    saveError: MEDAL_SAVE_ERROR_MESSAGE,
+                    statusNote: null,
+                    provisionalMedalId: target.provisionalMedal.medalId,
+                    isFallback: target.pendingSaveTarget.isFallback,
+                  });
+                }
+              }}
+              data-testid="reopen-unsaved-medal-button"
+              className="shrink-0 rounded-md bg-[#EF3E36] px-2.5 py-1 text-[11px] font-black text-white cursor-pointer"
+            >
+              再保存画面を開く
+            </button>
+          </div>
         )}
 
         {/* 2. 中央メイン画面（筐体内カプセル残数ビジュアル ＆ 1画面1カプセル操作ステージ） */}
@@ -480,6 +997,9 @@ export const App: React.FC<AppProps> = ({
           isOpen={Boolean(revealState?.isOpen)}
           onClose={handleCloseRevealModal}
           onOpenCollection={handleOpenCollectionFromModal}
+          canOpenCollection={Boolean(
+            revealState?.hasPersistedInDb && !revealState?.saveError && !revealState?.isSaving,
+          )}
           taskTitle={revealState?.taskTitle ?? ''}
           rarity={revealState?.rarity ?? 'N'}
           coinsEarned={revealState?.coinsEarned ?? 30}
@@ -488,6 +1008,9 @@ export const App: React.FC<AppProps> = ({
           imageUrl={revealState?.imageUrl ?? null}
           isGenerating={Boolean(revealState?.isGenerating)}
           statusNote={revealState?.statusNote}
+          saveError={revealState?.saveError}
+          isSaving={Boolean(revealState?.isSaving)}
+          onRetrySave={handleRetrySaveMedal}
         />
 
         {/* 6. メダルコレクション棚（図鑑ドロワー・レア度別/日付順・詳細表示）（FR-13, FR-16） */}
@@ -501,9 +1024,10 @@ export const App: React.FC<AppProps> = ({
           rarityFilter={rarityFilter}
           isLoading={isMedalsLoading}
           onChangeSortOrder={setSortOrder}
-          onChangeRarityFilter={setRarityFilter}
+          onChangeRarityFilter={handleChangeRarityFilter}
           loadMedalImage={loadMedalImage}
           initialSelectedMedalId={selectedCollectionMedalId}
+          onSelectMedal={updateSelectedCollectionMedalId}
         />
       </main>
     </div>

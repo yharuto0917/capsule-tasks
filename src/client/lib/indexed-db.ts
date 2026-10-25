@@ -20,6 +20,8 @@ export interface SaveMedalWithImageInput {
   medal: MedalItem;
   imageData?: Blob | string;
   mimeType?: string;
+  /** 仮メダルを実メダルへ置き換える際に同一トランザクション内で削除する旧 medalId */
+  replaceMedalId?: string;
 }
 
 export interface MedalWithImageResult {
@@ -272,6 +274,7 @@ export async function saveMedalWithImage({
   medal,
   imageData,
   mimeType = 'image/png',
+  replaceMedalId,
 }: SaveMedalWithImageInput): Promise<MedalItem> {
   const normalizedMedal: MedalItem = {
     ...medal,
@@ -306,6 +309,16 @@ export async function saveMedalWithImage({
         updatedAt: new Date().toISOString(),
       });
     }
+    if (replaceMedalId && replaceMedalId !== normalizedMedal.medalId) {
+      const replaced = memoryMedalStore.get(replaceMedalId);
+      if (replaced) {
+        if (replaced.imageBlobKey !== normalizedMedal.imageBlobKey) {
+          memoryImageStore.delete(replaced.imageBlobKey);
+        }
+        memoryMedalStore.delete(replaceMedalId);
+      }
+      memoryDeletedMedalIds.set(replaceMedalId, ++memoryMutationGeneration);
+    }
     return normalizedMedal;
   }
 
@@ -315,35 +328,67 @@ export async function saveMedalWithImage({
       const medalStore = tx.objectStore(MEDAL_METADATA_STORE);
       const imageStore = tx.objectStore(MEDAL_IMAGE_STORE);
 
+      const abortAndReject = (err: unknown) => {
+        try {
+          tx.abort();
+        } catch {
+          // ignore abort errors if transaction already finished/aborted
+        }
+        reject(err instanceof Error ? err : new Error('メダルデータの保存に失敗しました'));
+      };
+
       const getExistingReq = medalStore.get(normalizedMedal.medalId);
       getExistingReq.onsuccess = () => {
-        const existing = getExistingReq.result as MedalItem | undefined;
-        medalStore.put(normalizedMedal);
+        try {
+          const existing = getExistingReq.result as MedalItem | undefined;
+          medalStore.put(normalizedMedal);
 
-        if (imageData !== undefined) {
-          if (existing && existing.imageBlobKey !== normalizedMedal.imageBlobKey) {
-            imageStore.delete(existing.imageBlobKey);
-          }
-          const imageRecord: StoredMedalImageRecord = {
-            imageBlobKey: normalizedMedal.imageBlobKey,
-            imageData,
-            mimeType,
-            updatedAt: new Date().toISOString(),
-          };
-          imageStore.put(imageRecord);
-        } else if (existing && existing.imageBlobKey !== normalizedMedal.imageBlobKey) {
-          const getOldImgReq = imageStore.get(existing.imageBlobKey);
-          getOldImgReq.onsuccess = () => {
-            const oldImg = getOldImgReq.result as StoredMedalImageRecord | undefined;
-            if (oldImg) {
-              imageStore.put({
-                ...oldImg,
-                imageBlobKey: normalizedMedal.imageBlobKey,
-                updatedAt: new Date().toISOString(),
-              });
+          if (imageData !== undefined) {
+            if (existing && existing.imageBlobKey !== normalizedMedal.imageBlobKey) {
               imageStore.delete(existing.imageBlobKey);
             }
-          };
+            const imageRecord: StoredMedalImageRecord = {
+              imageBlobKey: normalizedMedal.imageBlobKey,
+              imageData,
+              mimeType,
+              updatedAt: new Date().toISOString(),
+            };
+            imageStore.put(imageRecord);
+          } else if (existing && existing.imageBlobKey !== normalizedMedal.imageBlobKey) {
+            const getOldImgReq = imageStore.get(existing.imageBlobKey);
+            getOldImgReq.onsuccess = () => {
+              try {
+                const oldImg = getOldImgReq.result as StoredMedalImageRecord | undefined;
+                if (oldImg) {
+                  imageStore.put({
+                    ...oldImg,
+                    imageBlobKey: normalizedMedal.imageBlobKey,
+                    updatedAt: new Date().toISOString(),
+                  });
+                  imageStore.delete(existing.imageBlobKey);
+                }
+              } catch (err) {
+                abortAndReject(err);
+              }
+            };
+          }
+
+          if (replaceMedalId && replaceMedalId !== normalizedMedal.medalId) {
+            const getReplacedReq = medalStore.get(replaceMedalId);
+            getReplacedReq.onsuccess = () => {
+              try {
+                const replaced = getReplacedReq.result as MedalItem | undefined;
+                if (replaced && replaced.imageBlobKey !== normalizedMedal.imageBlobKey) {
+                  imageStore.delete(replaced.imageBlobKey);
+                }
+                medalStore.delete(replaceMedalId);
+              } catch (err) {
+                abortAndReject(err);
+              }
+            };
+          }
+        } catch (err) {
+          abortAndReject(err);
         }
       };
 

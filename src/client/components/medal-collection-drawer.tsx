@@ -32,6 +32,8 @@ export interface MedalCollectionDrawerProps {
   loadMedalImage?: (imageBlobKey: string) => Promise<StoredMedalImageRecord | null>;
   /** ドロワーを開いた際に初期選択する medalId */
   initialSelectedMedalId?: string | null;
+  /** ドロワー内でメダル選択状態が変更された際のコールバック */
+  onSelectMedal?: (medalId: string | null) => void;
 }
 
 const RARITY_FILTER_OPTIONS: Array<{ value: MedalRarity | 'ALL'; label: string }> = [
@@ -108,6 +110,7 @@ export const MedalCollectionDrawer: React.FC<MedalCollectionDrawerProps> = ({
   onChangeRarityFilter,
   loadMedalImage,
   initialSelectedMedalId = null,
+  onSelectMedal,
 }) => {
   const currentContextKey = `${isOpen}:${initialSelectedMedalId ?? ''}`;
   const [selectionState, setSelectionState] = useState<{
@@ -123,6 +126,7 @@ export const MedalCollectionDrawer: React.FC<MedalCollectionDrawerProps> = ({
       : initialSelectedMedalId;
   const setSelectedMedalId = (medalId: string | null) => {
     setSelectionState({ contextKey: currentContextKey, medalId });
+    onSelectMedal?.(medalId);
   };
 
   const [imageUrlByBlobKey, setImageUrlByBlobKey] = useState<Record<string, string>>({});

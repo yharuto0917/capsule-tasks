@@ -1,5 +1,5 @@
 import React from 'react';
-import { Award, Coins, Flame, Loader2, Sparkles, X } from 'lucide-react';
+import { Award, Coins, Flame, Loader2, RefreshCw, Sparkles, X } from 'lucide-react';
 import { MEDAL_RARITY_STYLE_MAP } from '../../server/lib/medal-frames';
 import type { MedalItem, MedalRarity } from '../../shared/schemas';
 
@@ -10,6 +10,8 @@ export interface MedalRevealModalProps {
   onClose: () => void;
   /** 図鑑ドロワーを開いて獲得したメダルを確認するコールバック */
   onOpenCollection?: () => void;
+  /** 図鑑を開ける状態かどうか（未保存エラー時は無効化） */
+  canOpenCollection?: boolean;
   /** 達成したカプセルタスク名 */
   taskTitle: string;
   /** 抽選されたメダルレア度（N / R / SR / SSR） */
@@ -26,6 +28,12 @@ export interface MedalRevealModalProps {
   isGenerating?: boolean;
   /** フォールバックや補足ステータスメッセージ */
   statusNote?: string | null;
+  /** IndexedDB 保存失敗時のエラーメッセージ */
+  saveError?: string | null;
+  /** 再保存処理中フラグ */
+  isSaving?: boolean;
+  /** 保存失敗時に生成済みメダルを図鑑へ再保存するコールバック */
+  onRetrySave?: () => void;
 }
 
 /**
@@ -37,6 +45,7 @@ export const MedalRevealModal: React.FC<MedalRevealModalProps> = ({
   isOpen,
   onClose,
   onOpenCollection,
+  canOpenCollection = true,
   taskTitle,
   rarity,
   coinsEarned,
@@ -45,6 +54,9 @@ export const MedalRevealModal: React.FC<MedalRevealModalProps> = ({
   imageUrl,
   isGenerating = false,
   statusNote = null,
+  saveError = null,
+  isSaving = false,
+  onRetrySave,
 }) => {
   if (!isOpen) {
     return null;
@@ -196,10 +208,35 @@ export const MedalRevealModal: React.FC<MedalRevealModalProps> = ({
             )}
           </div>
 
-          {statusNote && (
-            <p data-testid="reveal-status-note" className="text-[10px] font-bold text-[#78350F]">
-              {statusNote}
-            </p>
+          {saveError ? (
+            <div
+              role="alert"
+              data-testid="reveal-save-error"
+              className="space-y-1.5 rounded-xl border-2 border-[#991B1B] bg-[#FFE2DE] px-2.5 py-2 text-center"
+            >
+              <p className="text-[11px] font-black text-[#991B1B]">{saveError}</p>
+              {onRetrySave && (
+                <button
+                  type="button"
+                  onClick={onRetrySave}
+                  disabled={isSaving}
+                  data-testid="retry-save-medal-button"
+                  className="toy-push-btn inline-flex min-h-[34px] items-center justify-center gap-1 rounded-xl bg-[#EF3E36] px-3 py-1 text-xs font-black text-white disabled:opacity-50 cursor-pointer"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 stroke-[2.75] ${isSaving ? 'animate-spin' : ''}`}
+                    aria-hidden="true"
+                  />
+                  <span>{isSaving ? '再保存中...' : '図鑑に再保存する'}</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            statusNote && (
+              <p data-testid="reveal-status-note" className="text-[10px] font-bold text-[#78350F]">
+                {statusNote}
+              </p>
+            )
           )}
         </div>
 
@@ -209,8 +246,9 @@ export const MedalRevealModal: React.FC<MedalRevealModalProps> = ({
             <button
               type="button"
               onClick={onOpenCollection}
+              disabled={!canOpenCollection || Boolean(saveError) || isSaving}
               data-testid="open-collection-from-modal-button"
-              className="toy-push-btn col-span-2 flex min-h-[44px] items-center justify-center gap-1 rounded-2xl bg-[#2563EB] px-2.5 py-2 text-xs font-black text-white cursor-pointer"
+              className="toy-push-btn col-span-2 flex min-h-[44px] items-center justify-center gap-1 rounded-2xl bg-[#2563EB] px-2.5 py-2 text-xs font-black text-white disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer"
             >
               <Award className="h-4 w-4 text-[#FFBE0B] shrink-0" aria-hidden="true" />
               <span>図鑑で見る</span>
