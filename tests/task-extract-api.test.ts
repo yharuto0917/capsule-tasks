@@ -288,6 +288,99 @@ describe('useVoiceRecorder ユーティリティ (MIME自動判定・Base64化)'
     expect(recorderStart).not.toHaveBeenCalled();
     expect(result.current.isRecording).toBe(false);
   });
+
+  it('キャンセル直後に再録音した際、旧レコーダーの遅延 dataavailable / onstop が後から発火しても新録音に混入・干渉しない', async () => {
+    const instances: FakeDelayedMediaRecorder[] = [];
+    const trackStops: Array<ReturnType<typeof vi.fn>> = [];
+
+    const getUserMedia = vi.fn(async () => {
+      const stop = vi.fn();
+      trackStops.push(stop);
+      return { getTracks: () => [{ stop }] };
+    });
+
+    class FakeDelayedMediaRecorder {
+      static isTypeSupported = () => true;
+      mimeType = 'audio/webm';
+      state: RecordingState = 'inactive';
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: (() => void) | null = null;
+
+      constructor() {
+        instances.push(this);
+      }
+
+      start() {
+        this.state = 'recording';
+      }
+
+      stop() {
+        // ブラウザの MediaRecorder 同様、stop() 時点では即座に dataavailable / onstop を発火せず、
+        // 非同期（後続のタイミング）で遅延発火するケースを再現する
+        this.state = 'inactive';
+      }
+    }
+
+    const { result } = renderHook(() =>
+      useVoiceRecorder({
+        getUserMedia: getUserMedia as never,
+        MediaRecorderClass: FakeDelayedMediaRecorder as never,
+      }),
+    );
+
+    // 1. 録音Aを開始し、録音中チャンクを1つ受け取る
+    await act(async () => {
+      await expect(result.current.startRecording()).resolves.toBe(true);
+    });
+    expect(instances).toHaveLength(1);
+    const recorderA = instances[0];
+
+    act(() => {
+      const oldInitialChunk = new Blob([new Uint8Array([99, 99])], { type: 'audio/webm' });
+      recorderA.ondataavailable?.({ data: oldInitialChunk } as BlobEvent);
+    });
+
+    // 2. 録音Aをキャンセル（recorderA.stop() が呼ばれるが、dataavailable はまだ遅延中）
+    act(() => {
+      result.current.cancelRecording();
+    });
+    expect(result.current.isRecording).toBe(false);
+    expect(trackStops[0]).toHaveBeenCalledTimes(1);
+
+    // 3. 直後に録音Bを開始
+    await act(async () => {
+      await expect(result.current.startRecording()).resolves.toBe(true);
+    });
+    expect(instances).toHaveLength(2);
+    const recorderB = instances[1];
+    expect(result.current.isRecording).toBe(true);
+
+    // 4. ここで録音Aの遅延 dataavailable と onstop が発火する
+    act(() => {
+      const staleChunk = new Blob([new Uint8Array([111, 108, 100])], { type: 'audio/webm' }); // "old"
+      recorderA.ondataavailable?.({ data: staleChunk } as BlobEvent);
+      recorderA.onstop?.();
+    });
+
+    // 録音Bの状態やストリームが壊れていないこと
+    expect(result.current.isRecording).toBe(true);
+    expect(trackStops[1]).not.toHaveBeenCalled();
+
+    // 5. 録音Bのチャンクを発火して停止し、録音Bのデータ（"new" = btoa("new") = "bmV3"）のみが含まれることを検証
+    let recordingResult: Awaited<ReturnType<typeof result.current.stopRecording>> = null;
+    await act(async () => {
+      const stopPromise = result.current.stopRecording();
+      const freshChunk = new Blob([new Uint8Array([110, 101, 119])], { type: 'audio/webm' }); // "new"
+      recorderB.ondataavailable?.({ data: freshChunk } as BlobEvent);
+      recorderB.onstop?.();
+      recordingResult = await stopPromise;
+    });
+
+    expect(recordingResult).not.toBeNull();
+    expect(recordingResult!.base64Data).toBe(btoa('new'));
+    expect(trackStops[1]).toHaveBeenCalledTimes(1);
+    expect(result.current.isRecording).toBe(false);
+  });
 });
 
 describe('TaskSupplySheet & App 統合検証 (FR-01, FR-03, FR-04, FR-05)', () => {

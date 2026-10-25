@@ -128,6 +128,17 @@ export async function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+interface RecordingSession {
+  /** 録音開始試行ごとの一意な世代番号 */
+  id: number;
+  recorder: MediaRecorder;
+  stream: MediaStream;
+  /** この録音セッション専用の音声チャンク配列 */
+  chunks: Blob[];
+  startTimeMs: number;
+  cancelled: boolean;
+}
+
 export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoiceRecorderReturn {
   const [isRecording, setIsRecording] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
@@ -137,13 +148,9 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
     normalizeRecorderMimeType(detectSupportedAudioMimeType()),
   );
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const startTimeMsRef = useRef<number>(0);
+  const sessionRef = useRef<RecordingSession | null>(null);
   const timerIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const cancelledRef = useRef<boolean>(false);
-  /** 録音開始試行の世代カウンタ。キャンセル・アンマウントで加算し、進行中の開始処理を無効化する */
+  /** 録音開始試行の世代カウンタ。新規開始・キャンセル・アンマウントで加算し、旧世代の処理や遅延イベントを無効化する */
   const startAttemptRef = useRef<number>(0);
   const optionsRef = useRef(options);
 
@@ -158,35 +165,38 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
     }
   }, []);
 
-  const stopStreamTracks = useCallback(() => {
-    if (mediaStreamRef.current) {
-      for (const track of mediaStreamRef.current.getTracks()) {
-        try {
-          track.stop();
-        } catch {
-          // ignore track stop error
-        }
+  const stopStream = useCallback((stream: MediaStream | null | undefined) => {
+    if (!stream) return;
+    for (const track of stream.getTracks()) {
+      try {
+        track.stop();
+      } catch {
+        // ignore track stop error
       }
-      mediaStreamRef.current = null;
     }
   }, []);
 
   useEffect(() => {
     return () => {
-      // アンマウント時点で進行中の開始処理（getUserMedia 待ち）も無効化する
+      // アンマウント時点で進行中の開始処理（getUserMedia 待ち）および旧セッションのイベントを無効化する
       startAttemptRef.current += 1;
       stopTimer();
-      const recorder = mediaRecorderRef.current;
-      if (recorder && recorder.state !== 'inactive') {
-        try {
-          recorder.stop();
-        } catch {
-          // ignore
+      const session = sessionRef.current;
+      sessionRef.current = null;
+      if (session) {
+        session.cancelled = true;
+        session.chunks = [];
+        if (session.recorder.state !== 'inactive') {
+          try {
+            session.recorder.stop();
+          } catch {
+            // ignore
+          }
         }
+        stopStream(session.stream);
       }
-      stopStreamTracks();
     };
-  }, [stopStreamTracks, stopTimer]);
+  }, [stopStream, stopTimer]);
 
   const RecorderCtor =
     options.MediaRecorderClass ??
@@ -226,27 +236,19 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
     }
 
     setIsPreparing(true);
-    cancelledRef.current = false;
-    chunksRef.current = [];
-    const startAttempt = ++startAttemptRef.current;
+    const sessionId = ++startAttemptRef.current;
+    let acquiredStream: MediaStream | null = null;
 
     try {
       const stream = await requestUserMedia({ audio: true });
+      acquiredStream = stream;
 
-      if (startAttempt !== startAttemptRef.current) {
+      if (sessionId !== startAttemptRef.current) {
         // 権限ダイアログ表示中にシートが閉じられた／キャンセルされた場合は、
         // 取得したストリームを即座に停止し、非表示のまま録音を開始しない
-        for (const track of stream.getTracks()) {
-          try {
-            track.stop();
-          } catch {
-            // ignore track stop error
-          }
-        }
+        stopStream(stream);
         return false;
       }
-
-      mediaStreamRef.current = stream;
 
       const checker =
         typeof ResolvedRecorder.isTypeSupported === 'function'
@@ -264,14 +266,29 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
       const activeMime = normalizeRecorderMimeType(recorder.mimeType || preferredMime);
       setMimeType(activeMime);
 
+      const session: RecordingSession = {
+        id: sessionId,
+        recorder,
+        stream,
+        chunks: [],
+        startTimeMs: Date.now(),
+        cancelled: false,
+      };
+      sessionRef.current = session;
+
       recorder.ondataavailable = (event: BlobEvent) => {
+        if (
+          session.cancelled ||
+          session.id !== startAttemptRef.current ||
+          sessionRef.current !== session
+        ) {
+          return;
+        }
         if (event.data && event.data.size > 0) {
-          chunksRef.current.push(event.data);
+          session.chunks.push(event.data);
         }
       };
 
-      mediaRecorderRef.current = recorder;
-      startTimeMsRef.current = Date.now();
       setDurationSeconds(0);
 
       recorder.start();
@@ -280,56 +297,93 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
 
       stopTimer();
       timerIdRef.current = setInterval(() => {
-        const elapsedSec = Math.max(0, Math.floor((Date.now() - startTimeMsRef.current) / 1000));
+        if (
+          session.cancelled ||
+          session.id !== startAttemptRef.current ||
+          sessionRef.current !== session
+        ) {
+          return;
+        }
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - session.startTimeMs) / 1000));
         setDurationSeconds(elapsedSec);
       }, 250);
 
       return true;
     } catch {
-      if (startAttempt !== startAttemptRef.current) {
+      stopStream(acquiredStream);
+      if (sessionRef.current?.id === sessionId) {
+        sessionRef.current = null;
+      }
+      if (sessionId !== startAttemptRef.current) {
         return false;
       }
-      stopStreamTracks();
+      stopTimer();
       setIsPreparing(false);
       setIsRecording(false);
       setError('マイクへのアクセスが許可されていないか、録音を開始できませんでした。');
       return false;
     }
-  }, [isPreparing, isRecording, stopStreamTracks, stopTimer]);
+  }, [isPreparing, isRecording, stopStream, stopTimer]);
 
   const stopRecording = useCallback(async (): Promise<VoiceRecordingResult | null> => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder || recorder.state === 'inactive') {
+    const session = sessionRef.current;
+    if (!session || session.recorder.state === 'inactive') {
       startAttemptRef.current += 1;
       stopTimer();
-      stopStreamTracks();
+      if (session) {
+        session.cancelled = true;
+        session.chunks = [];
+        sessionRef.current = null;
+        stopStream(session.stream);
+      }
       setIsPreparing(false);
       setIsRecording(false);
       return null;
     }
 
     stopTimer();
+    const { recorder } = session;
 
     return new Promise<VoiceRecordingResult | null>((resolve) => {
+      let settled = false;
+
       const finishRecording = async () => {
-        const durationMs = Math.max(0, Date.now() - startTimeMsRef.current);
+        if (settled) return;
+        settled = true;
+
+        const isCurrentSession =
+          !session.cancelled &&
+          session.id === startAttemptRef.current &&
+          sessionRef.current === session;
+
+        const durationMs = Math.max(0, Date.now() - session.startTimeMs);
         const rawMimeType = recorder.mimeType || detectSupportedAudioMimeType() || 'audio/webm';
         const normalizedMime = normalizeRecorderMimeType(rawMimeType);
-        const collectedChunks = [...chunksRef.current];
-        chunksRef.current = [];
-        mediaRecorderRef.current = null;
-        stopStreamTracks();
-        setIsRecording(false);
-        setDurationSeconds(0);
+        const collectedChunks = [...session.chunks];
 
-        if (cancelledRef.current) {
+        session.cancelled = true;
+        session.chunks = [];
+        stopStream(session.stream);
+
+        if (sessionRef.current === session) {
+          sessionRef.current = null;
+        }
+
+        if (!isCurrentSession) {
           resolve(null);
           return;
         }
 
+        setIsRecording(false);
+        setDurationSeconds(0);
+
         const blob = new Blob(collectedChunks, { type: rawMimeType });
         try {
           const base64Data = await blobToBase64(blob);
+          if (session.id !== startAttemptRef.current) {
+            resolve(null);
+            return;
+          }
           if (!base64Data) {
             setError('録音データが空でした。もう一度マイクに向かって話してください。');
             resolve(null);
@@ -343,7 +397,9 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
             durationMs,
           });
         } catch {
-          setError('録音データの変換に失敗しました。');
+          if (session.id === startAttemptRef.current) {
+            setError('録音データの変換に失敗しました。');
+          }
           resolve(null);
         }
       };
@@ -358,28 +414,30 @@ export function useVoiceRecorder(options: UseVoiceRecorderOptions = {}): UseVoic
         void finishRecording();
       }
     });
-  }, [stopStreamTracks, stopTimer]);
+  }, [stopStream, stopTimer]);
 
   const cancelRecording = useCallback(() => {
-    // 進行中の開始処理（getUserMedia 待ち）も無効化する
+    // 進行中の開始処理（getUserMedia 待ち）および現セッションの遅延イベントを無効化する
     startAttemptRef.current += 1;
-    cancelledRef.current = true;
     stopTimer();
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state !== 'inactive') {
-      try {
-        recorder.stop();
-      } catch {
-        // ignore
+    const session = sessionRef.current;
+    sessionRef.current = null;
+    if (session) {
+      session.cancelled = true;
+      session.chunks = [];
+      if (session.recorder.state !== 'inactive') {
+        try {
+          session.recorder.stop();
+        } catch {
+          // ignore
+        }
       }
+      stopStream(session.stream);
     }
-    chunksRef.current = [];
-    mediaRecorderRef.current = null;
-    stopStreamTracks();
     setIsRecording(false);
     setIsPreparing(false);
     setDurationSeconds(0);
-  }, [stopStreamTracks, stopTimer]);
+  }, [stopStream, stopTimer]);
 
   return {
     isRecording,
