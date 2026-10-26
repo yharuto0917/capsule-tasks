@@ -1,7 +1,14 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { App, PENDING_MEDAL_GENERATIONS_STORAGE_KEY } from '../src/client/app';
+import {
+  App,
+  PENDING_MEDAL_GENERATIONS_STORAGE_KEY,
+  PENDING_RECOVERY_INITIAL_RETRY_DELAY_MS,
+  PENDING_RECOVERY_MAX_RETRIES,
+  PENDING_RECOVERY_MAX_RETRY_DELAY_MS,
+  PENDING_RECOVERY_RETRY_BACKOFF_FACTOR,
+} from '../src/client/app';
 import { MedalCollectionDrawer } from '../src/client/components/medal-collection-drawer';
 import { MedalRevealModal } from '../src/client/components/medal-reveal-modal';
 import { generateCommemorativeMedal } from '../src/client/lib/api-client';
@@ -1494,5 +1501,157 @@ describe('4. App 一気通貫統合テスト (カプセル開封 → レア度�
 
     fireEvent.click(screen.getByTestId('close-reveal-modal-button'));
     expect(screen.getByTestId('unsaved-medal-alert')).toBeInTheDocument();
+  });
+
+  it('【再レビュー3回目指摘1回帰】復元時のIndexedDB読み取りが継続的に失敗する場合、指数バックオフ付きで上限回数に達した時点で自動再試行を停止して補助レコードを保持し、次回マウント時に再開できる', async () => {
+    const firstGenerateMedalFn = vi.fn().mockImplementation(
+      () =>
+        new Promise<MedalGenerateResponse>(() => {
+          // 応答前にアンマウント（ページ再読み込み）
+        }),
+    );
+
+    const { unmount: unmountFirst } = render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: firstGenerateMedalFn,
+      }),
+    );
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+
+    await waitFor(() => {
+      expect(firstGenerateMedalFn).toHaveBeenCalledTimes(1);
+    });
+
+    await waitFor(() => {
+      const raw = window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY);
+      expect(raw).toBeTruthy();
+      expect(JSON.parse(raw!)[0]?.provisionalSavedInDb).toBe(true);
+    });
+
+    unmountFirst();
+
+    // IndexedDB の読み取り（getAll）が継続的に失敗する環境を再現
+    let failGetAll = true;
+    let failedGetAllCount = 0;
+    const originalGetAll = IDBObjectStore.prototype.getAll;
+    vi.spyOn(IDBObjectStore.prototype, 'getAll').mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<IDBObjectStore['getAll']>
+    ) {
+      if (failGetAll) {
+        failedGetAllCount += 1;
+        throw new DOMException('Persistent IDB read failure', 'UnknownError');
+      }
+      return originalGetAll.apply(this, args);
+    });
+
+    const recordedBackoffDelays: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    const expectedDelays = Array.from({ length: PENDING_RECOVERY_MAX_RETRIES }, (_, i) =>
+      Math.min(
+        PENDING_RECOVERY_INITIAL_RETRY_DELAY_MS * PENDING_RECOVERY_RETRY_BACKOFF_FACTOR ** i,
+        PENDING_RECOVERY_MAX_RETRY_DELAY_MS,
+      ),
+    );
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+      handler: TimerHandler,
+      timeout?: number,
+      ...args: unknown[]
+    ) => {
+      if (typeof timeout === 'number' && expectedDelays.includes(timeout)) {
+        recordedBackoffDelays.push(timeout);
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout);
+
+    const secondGenerateMedalFn = vi.fn();
+
+    const { unmount: unmountSecond } = render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: secondGenerateMedalFn,
+      }),
+    );
+
+    // useMedalStorage 初回読み取り(1回) + 復元初回読み取り(1回) + 自動再試行(PENDING_RECOVERY_MAX_RETRIES回)
+    const expectedTotalFailedReads = 1 + 1 + PENDING_RECOVERY_MAX_RETRIES;
+
+    await waitFor(
+      () => {
+        expect(failedGetAllCount).toBe(expectedTotalFailedReads);
+      },
+      { timeout: 2000 },
+    );
+
+    // 指数バックオフ間隔（40ms -> 80ms -> 160ms -> 200ms上限）でスケジュールされたことを確認
+    expect(recordedBackoffDelays).toEqual(expectedDelays);
+
+    // 上限到達後、さらに最大バックオフ間隔を超えて待機しても再試行が増えず停止していること
+    await new Promise((resolve) =>
+      originalSetTimeout(resolve, PENDING_RECOVERY_MAX_RETRY_DELAY_MS + 120),
+    );
+    expect(failedGetAllCount).toBe(expectedTotalFailedReads);
+    expect(secondGenerateMedalFn).not.toHaveBeenCalled();
+
+    // 上限停止後も localStorage の補助レコード（provisionalSavedInDb: true）が消去されず保持されていること
+    const preservedRaw = window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY);
+    expect(preservedRaw).toBeTruthy();
+    expect(JSON.parse(preservedRaw!)[0]?.provisionalSavedInDb).toBe(true);
+
+    unmountSecond();
+
+    // 次回マウント時に IndexedDB が回復していれば、保持されていた補助レコードから復元・生成が再開されること
+    failGetAll = false;
+    const thirdGenerateMedalFn = vi.fn().mockResolvedValue({
+      medal: {
+        medalId: 'medal_ssr_recovered_on_next_mount',
+        taskId: 'cap_demo_001',
+        taskTitle: '企画書ドラフトを提出する',
+        medalName: '次回マウントで復元された虹彩勲章',
+        engravedText: 'NEXT MOUNT HERO',
+        rarity: 'SSR',
+        imageBlobKey: 'img_medal_ssr_recovered_on_next_mount',
+        modelUsed: 'gemini-nano-banana-2.1',
+        unlockedAt: '2026-10-25T13:00:00.000Z',
+        upgradeLevel: 0,
+      },
+      imageDataUrl: 'data:image/jpeg;base64,RECOVERED_ON_NEXT_MOUNT_IMG',
+      imageBase64: 'RECOVERED_ON_NEXT_MOUNT_IMG',
+      mimeType: 'image/jpeg',
+      thinkingLevel: 'medium',
+      frameReference: {
+        rarity: 'SSR',
+        frameId: 'frame_ssr_hologram',
+        frameNameJa: 'ホログラム枠',
+        frameNameEn: 'Hologram Frame',
+      },
+    } satisfies MedalGenerateResponse);
+
+    render(
+      React.createElement(App, {
+        randomFn: () => 0.001,
+        generateMedalFn: thirdGenerateMedalFn,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(thirdGenerateMedalFn).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('medal-reveal-modal')).toBeInTheDocument();
+      expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute(
+        'src',
+        'data:image/jpeg;base64,RECOVERED_ON_NEXT_MOUNT_IMG',
+      );
+      expect(screen.getByTestId('reveal-engraved-text')).toHaveTextContent('NEXT MOUNT HERO');
+    });
+
+    const finalMedals = await listMedals('date-desc', 'ALL');
+    expect(finalMedals).toHaveLength(1);
+    expect(finalMedals[0].medalId).toBe('medal_ssr_recovered_on_next_mount');
+    expect(window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY)).toBeNull();
   });
 });

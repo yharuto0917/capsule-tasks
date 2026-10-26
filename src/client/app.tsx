@@ -25,6 +25,10 @@ import {
 } from '../shared/schemas';
 
 export const PENDING_MEDAL_GENERATIONS_STORAGE_KEY = 'capsule_tasks_pending_medals_v1';
+export const PENDING_RECOVERY_INITIAL_RETRY_DELAY_MS = 40;
+export const PENDING_RECOVERY_RETRY_BACKOFF_FACTOR = 2;
+export const PENDING_RECOVERY_MAX_RETRY_DELAY_MS = 200;
+export const PENDING_RECOVERY_MAX_RETRIES = 4;
 
 const MEDAL_SAVE_ERROR_MESSAGE =
   '記念メダルを図鑑に保存できませんでした。空き容量を確認して再保存してください。';
@@ -466,6 +470,7 @@ export const App: React.FC<AppProps> = ({
   const setRarityFilterRef = useRef(setRarityFilter);
   const selectedCollectionMedalIdRef = useRef<string | null>(selectedCollectionMedalId);
   const inFlightProvisionalIdsRef = useRef<Set<string>>(new Set());
+  const resumePendingRecoveryRef = useRef<(() => void) | null>(null);
   const unsavedRecordsRef = useRef<PendingMedalGenerationRecord[]>([]);
   const [unsavedRecordCount, setUnsavedRecordCount] = useState<number>(0);
 
@@ -812,98 +817,130 @@ export const App: React.FC<AppProps> = ({
     isMountedRef.current = true;
     const cancelToken = { cancelled: false };
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0;
+    let retryExhausted = false;
+    let isRecoveryRunning = false;
     let hadDbReadFailure = false;
     const isCancelled = () => cancelToken.cancelled || !isMountedRef.current;
     const seq = ++crackGenerationSeqRef.current;
 
     const runPendingRecovery = async (): Promise<void> => {
-      const {
-        records: loadedRecords,
-        dbReadFailed,
-        finalizedMedals,
-      } = await loadPendingRecordsFromDbAndStorage();
-      if (isCancelled()) return;
+      if (isRecoveryRunning || isCancelled()) return;
+      isRecoveryRunning = true;
+      try {
+        const {
+          records: loadedRecords,
+          dbReadFailed,
+          finalizedMedals,
+        } = await loadPendingRecordsFromDbAndStorage();
+        if (isCancelled()) return;
 
-      if (dbReadFailed) {
-        hadDbReadFailure = true;
-        retryTimer = setTimeout(() => {
-          retryTimer = null;
-          if (!isCancelled()) {
-            void runPendingRecovery();
-          }
-        }, 40);
-        return;
-      }
-
-      if (hadDbReadFailure) {
-        void refreshMedalsRef.current();
-      }
-
-      const pendingRecords = loadedRecords.filter(
-        (rec) => !inFlightProvisionalIdsRef.current.has(rec.provisionalMedal.medalId),
-      );
-
-      if (pendingRecords.length === 0) {
-        const currentReveal = revealStateRef.current;
-        if (currentReveal && currentReveal.isGenerating) {
-          const alreadyFinalized = finalizedMedals.get(currentReveal.provisionalMedalId);
-          if (alreadyFinalized) {
-            let finalizedImgUrl = currentReveal.imageUrl;
-            let finalizedMime = currentReveal.mimeType;
-            try {
-              const existingImg = await loadMedalImageRef.current(alreadyFinalized.imageBlobKey);
-              if (existingImg && typeof existingImg.imageData === 'string') {
-                finalizedImgUrl = existingImg.imageData;
-                finalizedMime = existingImg.mimeType;
+        if (dbReadFailed) {
+          hadDbReadFailure = true;
+          if (retryCount < PENDING_RECOVERY_MAX_RETRIES) {
+            const delayMs = Math.min(
+              PENDING_RECOVERY_INITIAL_RETRY_DELAY_MS *
+                PENDING_RECOVERY_RETRY_BACKOFF_FACTOR ** retryCount,
+              PENDING_RECOVERY_MAX_RETRY_DELAY_MS,
+            );
+            retryCount += 1;
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              if (!isCancelled()) {
+                void runPendingRecovery();
               }
-            } catch {
-              // ignore image load failure
-            }
-            if (!isCancelled() && crackGenerationSeqRef.current === seq) {
+            }, delayMs);
+          } else {
+            retryExhausted = true;
+          }
+          return;
+        }
+
+        retryCount = 0;
+        retryExhausted = false;
+        if (hadDbReadFailure) {
+          void refreshMedalsRef.current();
+        }
+
+        const pendingRecords = loadedRecords.filter(
+          (rec) => !inFlightProvisionalIdsRef.current.has(rec.provisionalMedal.medalId),
+        );
+
+        if (pendingRecords.length === 0) {
+          const currentReveal = revealStateRef.current;
+          if (currentReveal && currentReveal.isGenerating) {
+            const alreadyFinalized = finalizedMedals.get(currentReveal.provisionalMedalId);
+            if (alreadyFinalized) {
+              let finalizedImgUrl = currentReveal.imageUrl;
+              let finalizedMime = currentReveal.mimeType;
+              try {
+                const existingImg = await loadMedalImageRef.current(alreadyFinalized.imageBlobKey);
+                if (existingImg && typeof existingImg.imageData === 'string') {
+                  finalizedImgUrl = existingImg.imageData;
+                  finalizedMime = existingImg.mimeType;
+                }
+              } catch {
+                // ignore image load failure
+              }
+              if (!isCancelled() && crackGenerationSeqRef.current === seq) {
+                updateRevealState((prev) =>
+                  prev && prev.provisionalMedalId === currentReveal.provisionalMedalId
+                    ? {
+                        ...prev,
+                        rarity: alreadyFinalized.rarity,
+                        medal: alreadyFinalized,
+                        imageUrl: finalizedImgUrl,
+                        mimeType: finalizedMime,
+                        isGenerating: false,
+                        isSaving: false,
+                        hasPersistedInDb: true,
+                        saveError: null,
+                        statusNote: null,
+                        isFallback: false,
+                      }
+                    : prev,
+                );
+              }
+            } else if (!isCancelled() && crackGenerationSeqRef.current === seq) {
               updateRevealState((prev) =>
-                prev && prev.provisionalMedalId === currentReveal.provisionalMedalId
-                  ? {
-                      ...prev,
-                      rarity: alreadyFinalized.rarity,
-                      medal: alreadyFinalized,
-                      imageUrl: finalizedImgUrl,
-                      mimeType: finalizedMime,
-                      isGenerating: false,
-                      isSaving: false,
-                      hasPersistedInDb: true,
-                      saveError: null,
-                      statusNote: null,
-                      isFallback: false,
-                    }
-                  : prev,
+                prev && prev.provisionalMedalId === currentReveal.provisionalMedalId ? null : prev,
               );
             }
-          } else if (!isCancelled() && crackGenerationSeqRef.current === seq) {
-            updateRevealState((prev) =>
-              prev && prev.provisionalMedalId === currentReveal.provisionalMedalId ? null : prev,
-            );
           }
+          return;
         }
-        return;
-      }
 
-      const latestRecord = pendingRecords[pendingRecords.length - 1];
-      if (!isCancelled() && crackGenerationSeqRef.current === seq) {
-        updateRevealState((prev) => {
-          if (prev && prev.provisionalMedalId !== latestRecord.provisionalMedal.medalId) {
-            return createInitialRevealStateFromRecord(latestRecord);
-          }
-          return prev ?? createInitialRevealStateFromRecord(latestRecord);
-        });
-      }
+        const latestRecord = pendingRecords[pendingRecords.length - 1];
+        if (!isCancelled() && crackGenerationSeqRef.current === seq) {
+          updateRevealState((prev) => {
+            if (prev && prev.provisionalMedalId !== latestRecord.provisionalMedal.medalId) {
+              return createInitialRevealStateFromRecord(latestRecord);
+            }
+            return prev ?? createInitialRevealStateFromRecord(latestRecord);
+          });
+        }
 
-      for (let i = 0; i < pendingRecords.length; i++) {
-        if (isCancelled()) return;
-        const record = pendingRecords[i];
-        if (inFlightProvisionalIdsRef.current.has(record.provisionalMedal.medalId)) continue;
-        const isLatest = i === pendingRecords.length - 1;
-        await executeMedalGenerationFlow(record, isLatest ? seq : -1, isCancelled);
+        for (let i = 0; i < pendingRecords.length; i++) {
+          if (isCancelled()) return;
+          const record = pendingRecords[i];
+          if (inFlightProvisionalIdsRef.current.has(record.provisionalMedal.medalId)) continue;
+          const isLatest = i === pendingRecords.length - 1;
+          await executeMedalGenerationFlow(record, isLatest ? seq : -1, isCancelled);
+        }
+      } finally {
+        isRecoveryRunning = false;
       }
+    };
+
+    resumePendingRecoveryRef.current = () => {
+      if (isCancelled() || !retryExhausted || isRecoveryRunning) return;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      retryCount = 0;
+      retryExhausted = false;
+      void runPendingRecovery();
     };
 
     void runPendingRecovery();
@@ -911,6 +948,7 @@ export const App: React.FC<AppProps> = ({
     return () => {
       cancelToken.cancelled = true;
       isMountedRef.current = false;
+      resumePendingRecoveryRef.current = null;
       if (retryTimer) {
         clearTimeout(retryTimer);
       }
@@ -1266,6 +1304,7 @@ export const App: React.FC<AppProps> = ({
 
   const handleOpenCollectionDrawer = (initialMedalId: string | null = null) => {
     unlockAudio();
+    resumePendingRecoveryRef.current?.();
     updateSelectedCollectionMedalId(initialMedalId);
     setIsCollectionDrawerOpen(true);
     setStatusFeedback('オリジナル記念メダル図鑑（N / R / SR / SSR）');
