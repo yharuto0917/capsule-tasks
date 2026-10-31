@@ -193,6 +193,8 @@ export interface MedalGenerateResponse {
   imageBase64: string;
   mimeType: string;
   thinkingLevel: 'minimal' | 'medium';
+  /** R2 等のストレージキャッシュから生成済みメダルを再利用した場合は true、新規生成した場合は false */
+  cached?: boolean;
   frameReference: {
     rarity: MedalRarity;
     frameId: string;

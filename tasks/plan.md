@@ -93,6 +93,7 @@
 │   │   ├── index.ts                # Hono アプリエントリ（/api/* ルーティング・Cloudflare Bindings 型定義）
 │   │   ├── lib/
 │   │   │   ├── gemini-client.ts    # c.env.GEMINI_API_KEY を用いた @google/genai クライアント初期化
+│   │   │   ├── medal-cache.ts      # 生成済み記念メダル画像の Cloudflare R2 キャッシュ保存・再利用ロジック
 │   │   │   └── medal-frames.ts     # N(ブロンズ)/R(シルバー)/SR(ゴールド)/SSR(ホログラム) 参照ベース枠データ
 │   │   └── routes/
 │   │       ├── tasks-extract.ts    # POST /api/tasks/extract (gemini-3.8-flash マルチモーダルタスク抽出)
@@ -120,6 +121,7 @@ flowchart TD
     T1_6 --> T1_7
     T1_1 --> T1_8["Task 1.8: 開発ガイドライン (AGENTS.md) 策定・運用ルール明文化"]
     T1_8 --> T1_9["Task 1.9: Development/stgブランチ・Cloudflare Preview・CI/CD構築"]
+    T1_6 --> T1_10["Task 1.10: 生成済みメダル画像の Cloudflare R2 キャッシュ保存・再利用"]
 
     T1_5 --> T2_1["Task 2.1: 画像/PDF＋音声の複合マルチモーダルタスク抽出"]
     T1_6 --> T2_2["Task 2.2: カプセル排出時の非同期メダルプリフェッチ機構"]
@@ -256,6 +258,19 @@ flowchart TD
   * [ ] 本Task（#21）が親Issue（#1）のSub-issueとして紐付けられ、GitHub Project（#3）に登録されていること。
 * **想定変更ファイル**：`.github/workflows/ci.yml`, `.github/workflows/deploy-stg-preview.yml`, `.github/workflows/deploy-production.yml`, `.github/PULL_REQUEST_TEMPLATE.md`, `.github/dependabot.yml`, `.gitignore`, `.editorconfig`, `AGENTS.md`, `tasks/plan.md`, `tasks/todo.md`
 * **規模**：M（8〜10ファイル）
+
+#### Task 1.10: 生成済み記念メダル画像の Cloudflare R2 キャッシュ保存・再利用機構の実装
+* **対応要件**：FR-13, FR-14、セクション 6: 非機能要件・技術仕様（APIコスト最適化・Cloudflare R2 活用）
+* **実装内容**：
+  * **Cloudflare R2 オプショナルバインディング対応**: `CloudflareBindings` に `MEDAL_CACHE_BUCKET?: R2Bucket | MedalCacheBucketLike` を定義し、バインディング未設定環境でも安全にフォールバック動作させる。
+  * **R2 キャッシュ層（`src/server/lib/medal-cache.ts`）**: `レア度 (N/R/SR/SSR) + 正規化タスク名 + 刻印テキスト`（`taskTitle` 未指定時のみ `medalPrompt`）を SHA-256 ハッシュ化したキー（`medals/v1/{rarity}/{sha256Hex}`）で画像バイナリおよびメタデータを保存・取得し、同一キー同時リクエストの合流（Coalescing）と R2 エラー時のグレースフルフォールバックを提供する。
+  * **メダル生成 API への統合**: `POST /api/medals/generate` にて Gemini API 呼び出し前に R2 を検索し、ヒット時は API 課金ゼロで R2 画像を返却しつつ `medalId` / `imageBlobKey` を新規発行して IndexedDB 図鑑への個別保存を保証する。未生成のカスタムタスク・レア度の組み合わせのみ `gemini-nano-banana-2.1` で新規生成して R2 に保存する。
+* **受け入れ条件（Acceptance Criteria）**：
+  * [x] 生成済みのタスク×レア度×刻印テキストに一致する場合、`client.interactions.create` を呼ばずに R2 から画像が返却され（`cached: true`）、図鑑にも別個の獲得メダルとして保存されること。
+  * [x] 未生成のカスタムタスクや別レア度の場合は `gemini-nano-banana-2.1` で生成されて R2 に保存されること（`cached: false`）。
+  * [x] `MEDAL_CACHE_BUCKET` 未設定時や R2 読み書き障害時にも生成フローが停止せずフォールバックすること。
+* **想定変更ファイル**：`src/server/index.ts`, `src/server/lib/medal-cache.ts`, `src/server/routes/medals-generate.ts`, `src/shared/schemas.ts`, `tests/medal-generate-api.test.ts`, `tasks/plan.md`, `tasks/todo.md`
+* **規模**：S〜M（5〜7ファイル）
 
 ---
 
