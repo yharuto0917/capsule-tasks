@@ -213,8 +213,8 @@ flowchart TD
   * Hono バックエンドに `src/server/routes/medals-generate.ts`（`POST /api/medals/generate`）を実装。`client.interactions.create` で `model: "gemini-nano-banana-2.1"` を呼び出し、抽選されたレア度（N/R/SR/SSR）に対応するベースメダル枠の参照画像（Multi-image fusion）と `medalPrompt`・達成称号テキスト（`engravedText`）を渡し、`1:1` 正方形・`1K` 解像度で記念メダル画像を生成して返す（通常時は `thinking_level: "minimal"`, SR/SSR時は `"medium"`）。
   * カプセル開封時に生成メダルと獲得コインを表示する `MedalRevealModal` と、これまでに獲得したメダルをレア度別・日付順で鑑賞できる `MedalCollectionDrawer`（図鑑ドロワー）を実装。
 * **受け入れ条件（Acceptance Criteria）**：
-  * [ ] カプセル開封時にレア度（N/R/SR/SSR）が抽選され、Hono `/api/medals/generate` で生成された記念メダル画像と刻印テキストがモーダルに表示されること（FR-13, FR-14）。
-  * [ ] 獲得したメダルが `IndexedDB` に保存され、メダルコレクション棚（図鑑ドロワー）でレア度別・日付順に一覧・詳細表示できること。
+  * [x] カプセル開封時にレア度（N/R/SR/SSR）が抽選され、Hono `/api/medals/generate` で生成された記念メダル画像と刻印テキストがモーダルに表示されること（FR-13, FR-14）。
+  * [x] 獲得したメダルが `IndexedDB` に保存され、メダルコレクション棚（図鑑ドロワー）でレア度別・日付順に一覧・詳細表示できること。
 * **想定変更ファイル**：`src/server/routes/medals-generate.ts`, `src/server/lib/medal-frames.ts`, `src/client/components/medal-reveal-modal.tsx`, `src/client/components/medal-collection-drawer.tsx`, `tests/medal-generate-api.test.ts`
 * **規模**：M（5ファイル）
 

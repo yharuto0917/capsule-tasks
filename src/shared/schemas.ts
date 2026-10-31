@@ -25,6 +25,22 @@ export interface CapsuleTask {
 }
 
 /**
+ * 仮メダル（生成待ち・未確定状態）が保持する復元用メタデータ
+ */
+export interface PendingMedalGenerationMetadata {
+  medalPrompt: string;
+  coinsEarned: number;
+  todayCombo: number;
+  fallbackSvgUrl: string;
+  pendingSaveTarget?: {
+    medal: MedalItem;
+    imageDataUrl: string;
+    mimeType: string;
+    isFallback: boolean;
+  };
+}
+
+/**
  * 7.2 メダルコレクション図鑑データ：`MedalItem`（IndexedDB 保存形式）
  */
 export interface MedalItem {
@@ -38,6 +54,10 @@ export interface MedalItem {
   modelUsed: string;
   unlockedAt: string;
   upgradeLevel: number;
+  /** 生成待ち（仮メダル）の場合に保持する復元用メタデータ。実メダル確定時には除去される */
+  pendingGeneration?: PendingMedalGenerationMetadata;
+  /** 仮メダルから確定・置換された場合に記録される元の仮メダルID（二重確定防止用） */
+  replacedProvisionalMedalId?: string;
 }
 
 /**
@@ -149,6 +169,36 @@ export interface ExtractedCapsuleTaskDraft {
  */
 export interface TaskExtractionResponse {
   tasks: ExtractedCapsuleTaskDraft[];
+}
+
+/**
+ * `gemini-nano-banana-2.1` 記念メダル生成リクエスト（`POST /api/medals/generate`）
+ */
+export interface MedalGenerateRequestPayload {
+  taskId?: string;
+  taskTitle?: string;
+  title?: string;
+  medalPrompt?: string;
+  rarity?: MedalRarity;
+  engravedText?: string;
+  medalName?: string;
+}
+
+/**
+ * `gemini-nano-banana-2.1` 記念メダル生成レスポンス（`POST /api/medals/generate`）
+ */
+export interface MedalGenerateResponse {
+  medal: MedalItem;
+  imageDataUrl: string;
+  imageBase64: string;
+  mimeType: string;
+  thinkingLevel: 'minimal' | 'medium';
+  frameReference: {
+    rarity: MedalRarity;
+    frameId: string;
+    frameNameJa: string;
+    frameNameEn: string;
+  };
 }
 
 /**

@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { medalsGenerateRoute } from './routes/medals-generate';
 import { tasksExtractRoute } from './routes/tasks-extract';
 
 export interface CloudflareBindings {
@@ -20,7 +21,8 @@ const app = new Hono<{ Bindings: CloudflareBindings }>()
       hasApiKey: Boolean(c.env?.GEMINI_API_KEY),
     });
   })
-  .route('/api/tasks', tasksExtractRoute);
+  .route('/api/tasks', tasksExtractRoute)
+  .route('/api/medals', medalsGenerateRoute);
 
 export type AppType = typeof app;
 export default app;
