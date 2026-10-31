@@ -310,6 +310,72 @@ describe('3. MedalRevealModal & MedalCollectionDrawer コンポーネント単�
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('MedalRevealModal がレア度（SSR / SR / R / N）に応じた祝祭エフェクト（ホログラム・紙吹雪・金粉スパークル）を描画し分ける', () => {
+    const baseProps = {
+      isOpen: true,
+      onClose: vi.fn(),
+      taskTitle: '企画書ドラフトを提出する',
+      coinsEarned: 30,
+      todayCombo: 4,
+      medal: sampleMedals[1],
+      imageUrl: 'data:image/jpeg;base64,FAKE_MEDAL_IMAGE',
+      isGenerating: false,
+    };
+
+    const { rerender } = render(
+      React.createElement(MedalRevealModal, {
+        ...baseProps,
+        rarity: 'SSR',
+      }),
+    );
+
+    // SSR: 紙吹雪・虹色ホログラムスイープ・プリズムスパークル・回転サンバーストが描画される
+    expect(screen.getByTestId('celebration-confetti')).toBeInTheDocument();
+    expect(screen.getByTestId('ssr-hologram-shimmer')).toBeInTheDocument();
+    expect(screen.getByTestId('ssr-prism-sparkles')).toBeInTheDocument();
+    expect(screen.getByTestId('reveal-rarity-sunburst')).toBeInTheDocument();
+
+    // SR: 金粉スパークル・金属光沢スイープ・回転サンバーストが描画され、紙吹雪・ホログラムは出ない
+    rerender(
+      React.createElement(MedalRevealModal, {
+        ...baseProps,
+        rarity: 'SR',
+      }),
+    );
+    expect(screen.queryByTestId('celebration-confetti')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ssr-hologram-shimmer')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sr-gold-sparkles')).toBeInTheDocument();
+    expect(screen.getByTestId('medal-metallic-sheen')).toBeInTheDocument();
+    expect(screen.getByTestId('reveal-rarity-sunburst')).toBeInTheDocument();
+
+    // R: シルバースパークル・金属光沢スイープが描画される
+    rerender(
+      React.createElement(MedalRevealModal, {
+        ...baseProps,
+        rarity: 'R',
+      }),
+    );
+    expect(screen.queryByTestId('celebration-confetti')).not.toBeInTheDocument();
+    expect(screen.getByTestId('r-silver-sparkles')).toBeInTheDocument();
+    expect(screen.getByTestId('medal-metallic-sheen')).toBeInTheDocument();
+
+    // N: 落ち着いた金属光沢のみが描画され、過剰なスパークルや紙吹雪は出ない
+    rerender(
+      React.createElement(MedalRevealModal, {
+        ...baseProps,
+        rarity: 'N',
+      }),
+    );
+    expect(screen.queryByTestId('celebration-confetti')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ssr-hologram-shimmer')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('reveal-rarity-sunburst')).not.toBeInTheDocument();
+    expect(screen.getByTestId('medal-metallic-sheen')).toBeInTheDocument();
+
+    // Escape キー押下でモーダルの onClose が呼ばれる
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(baseProps.onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('MedalCollectionDrawer でメダル一覧の表示・詳細表示・日付順/レア度順ソート・レア度フィルタが動作する', async () => {
     const onChangeSortOrder = vi.fn();
     const onChangeRarityFilter = vi.fn();

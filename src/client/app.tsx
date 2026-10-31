@@ -1356,13 +1356,36 @@ export const App: React.FC<AppProps> = ({
   return (
     <div
       data-testid="viewport-shell"
-      className="toy-room-backdrop relative flex h-[100dvh] w-full items-center justify-center overflow-hidden select-none"
+      className="toy-room-backdrop relative flex h-[100dvh] w-full items-center justify-center overflow-hidden select-none sm:p-4"
     >
+      {/* PCデスクトップ表示時の卓上スポットライト装飾 */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none hidden sm:block absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(255,255,255,0.55)_0%,rgba(247,235,217,0)_64%)]"
+      />
+
       {/* モバイルファースト 1画面完結ガチャ筐体コンテナ（320px〜430px基準 / PC時は物理ガチャマシン筐体中央配置） */}
       <main
         data-testid="mobile-stage-container"
-        className="toy-cabinet-body relative flex h-[100dvh] w-full max-w-[430px] flex-col justify-between overflow-hidden sm:h-[min(852px,95dvh)] sm:rounded-[44px] sm:border-[5px] sm:border-[#1E1B18] sm:shadow-[0_14px_0_#1E1B18,0_28px_60px_rgba(30,27,24,0.45)]"
+        className="toy-cabinet-body relative flex h-[100dvh] w-full max-w-[430px] flex-col justify-between overflow-hidden sm:h-[min(868px,95dvh)] sm:rounded-[44px] sm:border-[5px] sm:border-[#1E1B18] sm:shadow-[0_14px_0_#1E1B18,0_28px_60px_rgba(30,27,24,0.45)]"
       >
+        {/* PC筐体専用：上部おもちゃブランド銘板トップベゼル装飾 */}
+        <div
+          aria-hidden="true"
+          data-testid="cabinet-top-marquee"
+          className="hidden sm:flex items-center justify-between px-5 pt-2.5 pb-0.5 shrink-0"
+        >
+          <span className="toy-screw relative inline-block shrink-0" />
+          <div className="flex items-center gap-2 rounded-full border-2 border-[#1E1B18] bg-gradient-to-b from-[#FEF08A] via-[#FFBE0B] to-[#F59E0B] px-3.5 py-0.5 shadow-[inset_0_2px_0_rgba(255,255,255,0.8),0_2px_0_#1E1B18]">
+            <span className="h-2 w-2 rounded-full bg-[#EF3E36] border border-[#1E1B18]" />
+            <span className="font-display text-[10px] font-black tracking-[0.16em] text-[#1E1B18]">
+              CAPSULE TASKS • GACHA
+            </span>
+            <span className="h-2 w-2 rounded-full bg-[#00A8E8] border border-[#1E1B18]" />
+          </div>
+          <span className="toy-screw relative inline-block shrink-0" />
+        </div>
+
         {/* 1. 上部ステータスバー（ガチャ筐体トップパネル） */}
         <HeaderStatusBar
           coins={playerState.coins}
@@ -1443,6 +1466,7 @@ export const App: React.FC<AppProps> = ({
             externalInteractionTrigger={interactionTrigger}
             toastNotification={toastNotification}
             onOpeningLockChange={handleOpeningLockChange}
+            isPaused={isSupplySheetOpen || isCollectionDrawerOpen || Boolean(revealState?.isOpen)}
           />
 
           {/* 筐体ステータスインジケーターバー */}
@@ -1456,20 +1480,20 @@ export const App: React.FC<AppProps> = ({
           </div>
         </section>
 
-        {/* 3. 下部親指エリア（ガチャ筐体コントロールデッキ） */}
+        {/* 3. 下部親指エリア（ガチャ筐体コントロールデッキ / iOSホームバーセーフエリア対応） */}
         <footer
           aria-label="親指操作エリア"
           data-testid="thumb-action-dock"
-          className="w-full px-3.5 pt-1 pb-3 shrink-0 space-y-2 z-20"
+          className="safe-bottom-pad w-full px-2.5 sm:px-3.5 pt-1 shrink-0 space-y-2 z-20"
         >
           {/* サブ操作行：パス（ハンドル回し直し） / オートタイマー / リサイクル（破棄） */}
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
             <button
               type="button"
               onClick={handlePassCapsule}
               disabled={!activeCapsule || isUpdating || isOpeningCapsule}
               data-testid="action-pass-button"
-              className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl bg-[#7DD3FC] py-2 px-2 text-xs font-black text-[#1E1B18] disabled:opacity-45 cursor-pointer"
+              className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1 sm:gap-1.5 rounded-2xl bg-[#7DD3FC] py-2 px-1.5 sm:px-2 text-[11px] sm:text-xs font-black text-[#1E1B18] whitespace-nowrap disabled:opacity-45 cursor-pointer"
             >
               <RefreshCw className="h-3.5 w-3.5 stroke-[2.75] shrink-0" aria-hidden="true" />
               <span>パス(次へ)</span>
@@ -1480,7 +1504,7 @@ export const App: React.FC<AppProps> = ({
               onClick={() => setStatusFeedback('放置オート開封タイマー（5/15/25分）をセット可能')}
               disabled={!activeCapsule || isUpdating || isOpeningCapsule}
               data-testid="action-timer-button"
-              className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl bg-[#FFF8EC] py-2 px-2 text-xs font-black text-[#1E1B18] disabled:opacity-45 cursor-pointer"
+              className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1 sm:gap-1.5 rounded-2xl bg-[#FFF8EC] py-2 px-1.5 sm:px-2 text-[11px] sm:text-xs font-black text-[#1E1B18] whitespace-nowrap disabled:opacity-45 cursor-pointer"
             >
               <Timer
                 className="h-3.5 w-3.5 stroke-[2.75] text-[#D97706] shrink-0"
@@ -1494,7 +1518,7 @@ export const App: React.FC<AppProps> = ({
               onClick={handleRecycleCapsule}
               disabled={!activeCapsule || isUpdating || isOpeningCapsule}
               data-testid="action-recycle-button"
-              className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl bg-[#6EE7B7] py-2 px-2 text-xs font-black text-[#1E1B18] disabled:opacity-45 cursor-pointer"
+              className="toy-push-btn flex min-h-[44px] items-center justify-center gap-1 sm:gap-1.5 rounded-2xl bg-[#6EE7B7] py-2 px-1.5 sm:px-2 text-[11px] sm:text-xs font-black text-[#1E1B18] whitespace-nowrap disabled:opacity-45 cursor-pointer"
             >
               <Trash2
                 className="h-3.5 w-3.5 stroke-[2.75] text-[#065F46] shrink-0"
@@ -1505,13 +1529,13 @@ export const App: React.FC<AppProps> = ({
           </div>
 
           {/* メインナビゲーション行：＋カプセル補充（＋10コイン） / メダル図鑑 */}
-          <div className="grid grid-cols-5 gap-2">
+          <div className="grid grid-cols-5 gap-1.5 sm:gap-2">
             <button
               type="button"
               onClick={handleOpenSupplySheet}
               disabled={isUpdating}
               data-testid="open-supply-sheet-button"
-              className="toy-push-btn col-span-3 flex min-h-[50px] items-center justify-center gap-1.5 rounded-2xl bg-[#FFBE0B] py-2.5 px-2.5 text-xs sm:text-sm font-black text-[#1E1B18] whitespace-nowrap cursor-pointer"
+              className="toy-push-btn col-span-3 flex min-h-[50px] items-center justify-center gap-1 sm:gap-1.5 rounded-2xl bg-[#FFBE0B] py-2.5 px-2 sm:px-2.5 text-xs sm:text-sm font-black text-[#1E1B18] whitespace-nowrap cursor-pointer"
             >
               <PlusCircle className="h-4 w-4 stroke-[2.75] shrink-0" aria-hidden="true" />
               <span>＋ カプセル補充</span>
@@ -1524,7 +1548,7 @@ export const App: React.FC<AppProps> = ({
               type="button"
               onClick={() => handleOpenCollectionDrawer(null)}
               data-testid="open-collection-drawer-button"
-              className="toy-push-btn col-span-2 flex min-h-[50px] items-center justify-center gap-1.5 rounded-2xl bg-[#2563EB] py-2.5 px-2.5 text-xs sm:text-sm font-black text-white whitespace-nowrap cursor-pointer"
+              className="toy-push-btn col-span-2 flex min-h-[50px] items-center justify-center gap-1 sm:gap-1.5 rounded-2xl bg-[#2563EB] py-2.5 px-2 sm:px-2.5 text-xs sm:text-sm font-black text-white whitespace-nowrap cursor-pointer"
             >
               <Award className="h-4 w-4 stroke-[2.75] text-[#FFBE0B] shrink-0" aria-hidden="true" />
               <span>メダル図鑑</span>
@@ -1537,6 +1561,24 @@ export const App: React.FC<AppProps> = ({
                 </span>
               )}
             </button>
+          </div>
+
+          {/* PC筐体専用：下部コイン投入口＆排出口モールドレリーフ装飾 */}
+          <div
+            aria-hidden="true"
+            data-testid="cabinet-bottom-trim"
+            className="hidden sm:flex items-center justify-between pt-0.5 px-2 opacity-90"
+          >
+            <div className="flex items-center gap-1.5 rounded-full border-2 border-[#1E1B18] bg-[#B81D13] px-2.5 py-0.5 shadow-[inset_0_2px_3px_rgba(0,0,0,0.45)]">
+              <span className="h-3 w-1 rounded-full bg-[#1E1B18] border border-white/35" />
+              <span className="font-display text-[9px] font-bold tracking-wider text-[#FFF8EC]/90">
+                COIN MECH
+              </span>
+            </div>
+            <div className="h-1.5 w-24 rounded-full bg-[#1E1B18]/35 shadow-[inset_0_1px_1px_rgba(0,0,0,0.5),0_1px_0_rgba(255,255,255,0.25)]" />
+            <div className="rounded-full border-2 border-[#1E1B18] bg-[#292524] px-2.5 py-0.5 font-display text-[9px] font-bold tracking-wider text-[#FFBE0B]">
+              1P READY
+            </div>
           </div>
         </footer>
 

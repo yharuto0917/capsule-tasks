@@ -106,19 +106,7 @@ export const TaskSupplySheet: React.FC<TaskSupplySheetProps> = ({
     clearError: clearRecorderError,
   } = useVoiceRecorder(voiceRecorderOptions);
 
-  useEffect(() => {
-    if (!isOpen && (isRecording || isPreparing)) {
-      cancelRecording();
-    }
-  }, [cancelRecording, isOpen, isPreparing, isRecording]);
-
-  if (!isOpen) {
-    return null;
-  }
-
-  const displayStamps = (stamps.length > 0 ? stamps : DEFAULT_CUSTOM_STAMPS).slice(0, 8);
   const isBusy = isUpdating || isExtracting || isPreparing;
-  const activeError = localError ?? recorderError;
 
   const handleClose = () => {
     if (isRecording || isPreparing) {
@@ -128,6 +116,36 @@ export const TaskSupplySheet: React.FC<TaskSupplySheetProps> = ({
     clearRecorderError();
     onClose();
   };
+
+  useEffect(() => {
+    if (!isOpen && (isRecording || isPreparing)) {
+      cancelRecording();
+    }
+  }, [cancelRecording, isOpen, isPreparing, isRecording]);
+
+  useEffect(() => {
+    if (!isOpen || isBusy || typeof window === 'undefined') return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (isRecording || isPreparing) {
+          cancelRecording();
+        }
+        setLocalError(null);
+        clearRecorderError();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [cancelRecording, clearRecorderError, isBusy, isOpen, isPreparing, isRecording, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  const displayStamps = (stamps.length > 0 ? stamps : DEFAULT_CUSTOM_STAMPS).slice(0, 8);
+  const activeError = localError ?? recorderError;
 
   const handleStampTap = async (stampTitle: string) => {
     if (isBusy || isRecording) return;
@@ -231,7 +249,7 @@ export const TaskSupplySheet: React.FC<TaskSupplySheetProps> = ({
         }
       }}
     >
-      <div className="toy-cream-panel relative flex max-h-[88%] w-full flex-col overflow-hidden rounded-t-[32px] border-t-4 border-[#1E1B18] bg-[#FFF8EC] px-3.5 pt-3 pb-4 shadow-[0_-8px_24px_rgba(0,0,0,0.3)]">
+      <div className="toy-cream-panel safe-sheet-bottom-pad relative flex max-h-[88%] w-full flex-col overflow-hidden rounded-t-[32px] border-t-4 border-[#1E1B18] bg-[#FFF8EC] px-3.5 pt-3 shadow-[0_-8px_24px_rgba(0,0,0,0.3)]">
         {/* 上部ドラッグハンドル装飾＆ヘッダー */}
         <div className="mx-auto mb-2 h-1.5 w-12 shrink-0 rounded-full bg-[#1E1B18]/25" />
 
