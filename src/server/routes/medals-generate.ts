@@ -8,6 +8,7 @@ import {
 } from '../../shared/schemas';
 import type { CloudflareBindings } from '../index';
 import { createGeminiClient, MissingGeminiApiKeyError } from '../lib/gemini-client';
+import { buildMedalCacheObjectKey, resolveOrGenerateMedalImage } from '../lib/medal-cache';
 import { getMedalFrameReference, getThinkingLevelForRarity } from '../lib/medal-frames';
 import { stripDataUrlPrefix } from './tasks-extract';
 
@@ -166,7 +167,7 @@ function parseImagePart(part: unknown): {
         detectedMime = mimeMatch[1].toLowerCase();
       }
     }
-    const cleanBase64 = stripDataUrlPrefix(rawData);
+    const cleanBase64 = stripDataUrlPrefix(rawData).replace(/\s+/g, '');
     if (!cleanBase64) return null;
     return {
       imageBase64: cleanBase64,
@@ -229,6 +230,20 @@ export function extractGeneratedImageFromInteraction(interaction: unknown): {
   return null;
 }
 
+class GeminiClientInitializationError extends Error {
+  constructor(message = 'Gemini クライアントの初期化に失敗しました。') {
+    super(message);
+    this.name = 'GeminiClientInitializationError';
+  }
+}
+
+class EmptyGeneratedMedalImageError extends Error {
+  constructor(message = 'AIモデルから有効なメダル画像データが得られませんでした。') {
+    super(message);
+    this.name = 'EmptyGeneratedMedalImageError';
+  }
+}
+
 export const medalsGenerateRoute = new Hono<{ Bindings: CloudflareBindings }>().post(
   '/generate',
   async (c) => {
@@ -262,16 +277,6 @@ export const medalsGenerateRoute = new Hono<{ Bindings: CloudflareBindings }>().
       );
     }
 
-    let client;
-    try {
-      client = createGeminiClient(c.env?.GEMINI_API_KEY);
-    } catch (error) {
-      if (error instanceof MissingGeminiApiKeyError) {
-        return c.json({ error: error.message }, error.statusCode);
-      }
-      return c.json({ error: 'Gemini クライアントの初期化に失敗しました。' }, 500);
-    }
-
     const resolvedTaskTitle = rawTaskTitle || 'カプセルタスク達成';
     const resolvedTaskId =
       typeof body?.taskId === 'string' && body.taskId.trim().length > 0
@@ -286,43 +291,80 @@ export const medalsGenerateRoute = new Hono<{ Bindings: CloudflareBindings }>().
     const medalName = resolveMedalName(body?.medalName, resolvedTaskTitle, rarity);
     const frameRef = getMedalFrameReference(rarity);
     const thinkingLevel = getThinkingLevelForRarity(rarity);
-    const composedPrompt = buildMedalGenerationPrompt({
-      medalPrompt: rawMedalPrompt,
-      engravedText,
-      taskTitle: resolvedTaskTitle,
+
+    const cacheObjectKey = await buildMedalCacheObjectKey({
+      model: MEDAL_GENERATION_MODEL,
       rarity,
+      rawTaskTitle,
+      rawMedalPrompt,
+      engravedText,
     });
 
     try {
-      const interaction = await client.interactions.create({
-        model: MEDAL_GENERATION_MODEL,
-        system_instruction: MEDAL_GENERATION_SYSTEM_INSTRUCTION,
-        generation_config: {
-          thinking_level: thinkingLevel,
+      const { entry: resolvedImage, cached } = await resolveOrGenerateMedalImage({
+        bucket: c.env?.MEDAL_CACHE_BUCKET,
+        objectKey: cacheObjectKey,
+        metadata: {
+          rarity,
+          engravedText,
+          taskTitle: resolvedTaskTitle,
         },
-        response_format: {
-          type: 'image',
-          mime_type: 'image/jpeg',
-          aspect_ratio: '1:1',
-          image_size: '1K',
-        },
-        input: [
-          {
-            type: 'image',
-            data: frameRef.referenceImageBase64,
-            mime_type: frameRef.mimeType,
-          },
-          {
-            type: 'text',
-            text: composedPrompt,
-          },
-        ],
-      });
+        generateFn: async () => {
+          let client;
+          try {
+            client = createGeminiClient(c.env?.GEMINI_API_KEY);
+          } catch (error) {
+            if (error instanceof MissingGeminiApiKeyError) {
+              throw error;
+            }
+            throw new GeminiClientInitializationError();
+          }
 
-      const extractedImage = extractGeneratedImageFromInteraction(interaction);
-      if (!extractedImage) {
-        return c.json({ error: 'AIモデルから有効なメダル画像データが得られませんでした。' }, 502);
-      }
+          const composedPrompt = buildMedalGenerationPrompt({
+            medalPrompt: rawMedalPrompt,
+            engravedText,
+            taskTitle: resolvedTaskTitle,
+            rarity,
+          });
+
+          const interaction = await client.interactions.create({
+            model: MEDAL_GENERATION_MODEL,
+            system_instruction: MEDAL_GENERATION_SYSTEM_INSTRUCTION,
+            generation_config: {
+              thinking_level: thinkingLevel,
+            },
+            response_format: {
+              type: 'image',
+              mime_type: 'image/jpeg',
+              aspect_ratio: '1:1',
+              image_size: '1K',
+            },
+            input: [
+              {
+                type: 'image',
+                data: frameRef.referenceImageBase64,
+                mime_type: frameRef.mimeType,
+              },
+              {
+                type: 'text',
+                text: composedPrompt,
+              },
+            ],
+          });
+
+          const extractedImage = extractGeneratedImageFromInteraction(interaction);
+          if (!extractedImage) {
+            throw new EmptyGeneratedMedalImageError();
+          }
+
+          return {
+            imageBase64: extractedImage.imageBase64,
+            mimeType: extractedImage.mimeType,
+            imageDataUrl: extractedImage.imageDataUrl,
+            modelUsed: MEDAL_GENERATION_MODEL,
+          };
+        },
+      });
 
       const nowMs = Date.now();
       const medalId = createMedalId(rarity, nowMs);
@@ -334,17 +376,18 @@ export const medalsGenerateRoute = new Hono<{ Bindings: CloudflareBindings }>().
         engravedText,
         rarity,
         imageBlobKey: `img_${medalId}`,
-        modelUsed: MEDAL_GENERATION_MODEL,
+        modelUsed: resolvedImage.modelUsed,
         unlockedAt: new Date(nowMs).toISOString(),
         upgradeLevel: 0,
       };
 
       const responsePayload: MedalGenerateResponse = {
         medal,
-        imageDataUrl: extractedImage.imageDataUrl,
-        imageBase64: extractedImage.imageBase64,
-        mimeType: extractedImage.mimeType,
+        imageDataUrl: resolvedImage.imageDataUrl,
+        imageBase64: resolvedImage.imageBase64,
+        mimeType: resolvedImage.mimeType,
         thinkingLevel,
+        cached,
         frameReference: {
           rarity: frameRef.rarity,
           frameId: frameRef.frameId,
@@ -355,6 +398,15 @@ export const medalsGenerateRoute = new Hono<{ Bindings: CloudflareBindings }>().
 
       return c.json(responsePayload, 200);
     } catch (error) {
+      if (error instanceof MissingGeminiApiKeyError) {
+        return c.json({ error: error.message }, error.statusCode);
+      }
+      if (error instanceof GeminiClientInitializationError) {
+        return c.json({ error: error.message }, 500);
+      }
+      if (error instanceof EmptyGeneratedMedalImageError) {
+        return c.json({ error: error.message }, 502);
+      }
       const message =
         error instanceof Error && error.message
           ? `メダル生成APIエラー: ${error.message}`

@@ -12,6 +12,7 @@ import {
 import { MedalCollectionDrawer } from '../src/client/components/medal-collection-drawer';
 import { MedalRevealModal } from '../src/client/components/medal-reveal-modal';
 import { generateCommemorativeMedal } from '../src/client/lib/api-client';
+import { CAPSULE_STORE_STORAGE_KEY } from '../src/client/lib/capsule-store-storage';
 import {
   ReplaceTargetNotFoundError,
   clearAllMedals,
@@ -24,6 +25,17 @@ import {
 import serverApp from '../src/server/index';
 import { setGeminiClientFactoryForTests } from '../src/server/lib/gemini-client';
 import {
+  base64ToUint8Array,
+  buildMedalCacheObjectKey,
+  buildMedalCacheSeed,
+  encodeSafeMetadataText,
+  resetMedalCacheInFlightForTests,
+  uint8ArrayToBase64,
+  type MedalCacheBucketLike,
+  type MedalCacheObjectBodyLike,
+  type MedalCachePutOptionsLike,
+} from '../src/server/lib/medal-cache';
+import {
   MEDAL_FRAME_REFERENCES,
   getMedalFrameReference,
   getThinkingLevelForRarity,
@@ -33,16 +45,23 @@ import {
   extractGeneratedImageFromInteraction,
   resolveEngravedText,
 } from '../src/server/routes/medals-generate';
-import type { MedalGenerateResponse, MedalItem } from '../src/shared/schemas';
+import {
+  createDefaultPlayerState,
+  type CapsuleTask,
+  type MedalGenerateResponse,
+  type MedalItem,
+} from '../src/shared/schemas';
 
 beforeEach(async () => {
   window.localStorage.clear();
   await clearAllMedals();
   setGeminiClientFactoryForTests(null);
+  resetMedalCacheInFlightForTests();
 });
 
 afterEach(() => {
   setGeminiClientFactoryForTests(null);
+  resetMedalCacheInFlightForTests();
   vi.restoreAllMocks();
 });
 
@@ -1653,5 +1672,602 @@ describe('4. App 一気通貫統合テスト (カプセル開封 → レア度�
     expect(finalMedals).toHaveLength(1);
     expect(finalMedals[0].medalId).toBe('medal_ssr_recovered_on_next_mount');
     expect(window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY)).toBeNull();
+  });
+});
+
+interface StoredR2Entry {
+  bytes: Uint8Array;
+  httpMetadata?: { contentType?: string };
+  customMetadata?: Record<string, string>;
+}
+
+function createInMemoryR2Bucket(): {
+  bucket: MedalCacheBucketLike;
+  entries: Map<string, StoredR2Entry>;
+} {
+  const entries = new Map<string, StoredR2Entry>();
+
+  const bucket: MedalCacheBucketLike = {
+    async get(key: string): Promise<MedalCacheObjectBodyLike | null> {
+      const found = entries.get(key);
+      if (!found) {
+        return null;
+      }
+      return {
+        async arrayBuffer(): Promise<ArrayBuffer> {
+          const copy = new Uint8Array(found.bytes.byteLength);
+          copy.set(found.bytes);
+          return copy.buffer;
+        },
+        httpMetadata: found.httpMetadata,
+        customMetadata: found.customMetadata,
+      };
+    },
+    async put(
+      key: string,
+      value: ArrayBuffer | ArrayBufferView,
+      options?: MedalCachePutOptionsLike,
+    ): Promise<void> {
+      const view =
+        value instanceof ArrayBuffer
+          ? new Uint8Array(value)
+          : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      const copy = new Uint8Array(view.byteLength);
+      copy.set(view);
+      entries.set(key, {
+        bytes: copy,
+        httpMetadata: options?.httpMetadata,
+        customMetadata: options?.customMetadata,
+      });
+    },
+  };
+
+  return { bucket, entries };
+}
+
+describe('5. Cloudflare R2 メダル画像キャッシュ保存・再利用 (src/server/lib/medal-cache.ts)', () => {
+  it('タスク名・刻印の表記揺れやAIプロンプト文言の揺れを吸収して同一キーを生成し、レア度・カスタムタスク名・プロンプトのみ指定では別キーに分離する', async () => {
+    const keyA = await buildMedalCacheObjectKey({
+      model: MEDAL_GENERATION_MODEL,
+      rarity: 'SR',
+      rawTaskTitle: '  掃除  ',
+      rawMedalPrompt: 'A golden coin with a broom motif',
+      engravedText: 'CLEAN SWEEPER',
+    });
+    const keySameTaskDifferentPrompt = await buildMedalCacheObjectKey({
+      model: MEDAL_GENERATION_MODEL,
+      rarity: 'SR',
+      rawTaskTitle: '掃除',
+      rawMedalPrompt: 'A shiny 3D commemorative gold medal depicting a sparkling vacuum cleaner',
+      engravedText: 'clean   sweeper',
+    });
+
+    expect(keyA).toMatch(/^medals\/v1\/SR\/[0-9a-f]{64}$/);
+    expect(keySameTaskDifferentPrompt).toBe(keyA);
+
+    const keyDifferentRarity = await buildMedalCacheObjectKey({
+      model: MEDAL_GENERATION_MODEL,
+      rarity: 'N',
+      rawTaskTitle: '掃除',
+      rawMedalPrompt: 'A golden coin with a broom motif',
+      engravedText: 'CLEAN SWEEPER',
+    });
+    const keyCustomTask = await buildMedalCacheObjectKey({
+      model: MEDAL_GENERATION_MODEL,
+      rarity: 'SR',
+      rawTaskTitle: 'エアコンのフィルター掃除',
+      rawMedalPrompt: 'A golden coin with an air conditioner filter',
+      engravedText: 'CLEAN SWEEPER',
+    });
+
+    expect(keyDifferentRarity).not.toBe(keyA);
+    expect(keyCustomTask).not.toBe(keyA);
+
+    // taskTitle 未指定（medalPrompt のみ）のリクエスト同士がデフォルトタイトルで衝突しないこと
+    const promptOnlySeed1 = buildMedalCacheSeed({
+      model: MEDAL_GENERATION_MODEL,
+      rarity: 'R',
+      rawTaskTitle: '',
+      rawMedalPrompt: 'A silver medal with a rocket',
+      engravedText: 'SILVER STRIKER',
+    });
+    const promptOnlySeed2 = buildMedalCacheSeed({
+      model: MEDAL_GENERATION_MODEL,
+      rarity: 'R',
+      rawTaskTitle: '',
+      rawMedalPrompt: 'A silver medal with a coffee mug',
+      engravedText: 'SILVER STRIKER',
+    });
+    expect(promptOnlySeed1).toContain('prompt:');
+    expect(promptOnlySeed1).not.toBe(promptOnlySeed2);
+
+    // パイプ記号（|）を含む入力でも JSON.stringify シリアライズにより別セグメントと衝突しないこと
+    const pipeSeedA = buildMedalCacheSeed({
+      model: MEDAL_GENERATION_MODEL,
+      rarity: 'N',
+      rawTaskTitle: 'a|engraved:foo',
+      rawMedalPrompt: '',
+      engravedText: 'bar',
+    });
+    const pipeSeedB = buildMedalCacheSeed({
+      model: MEDAL_GENERATION_MODEL,
+      rarity: 'N',
+      rawTaskTitle: 'a',
+      rawMedalPrompt: '',
+      engravedText: 'foo|engraved:bar',
+    });
+    expect(pipeSeedA).not.toBe(pipeSeedB);
+
+    // サロゲートペア（絵文字）境界での切り詰めや孤立サロゲート混入でも URIError を投げず安全にエンコードできること
+    const emojiBoundaryTitle = `${'あ'.repeat(35)}🧹🥇テスト`;
+    const encodedMeta = encodeSafeMetadataText(emojiBoundaryTitle, 36);
+    expect(decodeURIComponent(encodedMeta)).toBe(`${'あ'.repeat(35)}🧹`);
+    expect(() => encodeSafeMetadataText('broken\uD83Esurrogate', 36)).not.toThrow();
+
+    // Base64 <-> Uint8Array 変換がバイナリ欠損なく往復できること
+    const sampleBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49]);
+    const b64 = uint8ArrayToBase64(sampleBytes);
+    expect(Array.from(base64ToUint8Array(b64))).toEqual(Array.from(sampleBytes));
+  });
+
+  it('初回リクエストで生成画像（改行入りBase64や絵文字入りタスク名を含む）をバイナリとしてR2へ保存し（cached: false）、2回目の同一コインはGemini APIを呼ばずR2から取り出して新しいmedalIdを発行する（cached: true）', async () => {
+    const validJpegBase64 = uint8ArrayToBase64(
+      new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]),
+    );
+    // RFC 2045 の改行コード（\r\n）が混入した Base64 レスポンスでも binary として保存・正規化されること
+    const multilineJpegBase64 = `${validJpegBase64.slice(0, 8)}\r\n${validJpegBase64.slice(8)}`;
+    const createInteractionMock = vi.fn().mockResolvedValue({
+      output_image: {
+        type: 'image',
+        mime_type: 'image/jpeg',
+        data: multilineJpegBase64,
+      },
+    });
+
+    setGeminiClientFactoryForTests(() => ({
+      interactions: {
+        create: createInteractionMock as never,
+      },
+    }));
+
+    const { bucket, entries } = createInMemoryR2Bucket();
+    const emojiTaskTitle = `${'部屋の大掃除'.repeat(6)}🧹✨`; // 36文字境界に絵文字（サロゲートペア）が掛かるタスク名
+
+    // 1回目: R2 未キャッシュのため Gemini API を1回呼び出して R2 に保存
+    const firstRes = await serverApp.request(
+      '/api/medals/generate',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: 'cap_clean_1',
+          taskTitle: emojiTaskTitle,
+          medalPrompt: 'A bronze medal with a broom and engraved text "CLEAN SWEEPER"',
+          rarity: 'N',
+        }),
+      },
+      {
+        GEMINI_API_KEY: 'test-dummy-key',
+        MEDAL_CACHE_BUCKET: bucket,
+      },
+    );
+
+    expect(firstRes.status).toBe(200);
+    const firstBody = (await firstRes.json()) as MedalGenerateResponse;
+    expect(firstBody.cached).toBe(false);
+    expect(firstBody.imageBase64).toBe(validJpegBase64);
+    expect(createInteractionMock).toHaveBeenCalledTimes(1);
+    expect(entries.size).toBe(1);
+
+    const [[storedKey, storedEntry]] = Array.from(entries.entries());
+    expect(storedKey).toMatch(/^medals\/v1\/N\/[0-9a-f]{64}$/);
+    expect(storedEntry.httpMetadata?.contentType).toBe('image/jpeg');
+    expect(storedEntry.customMetadata?.encoding).toBe('binary');
+
+    // 2回目: 同じタスク名・レア度（medalPrompt の英語表現が異なっていても、また GEMINI_API_KEY 未設定でも R2 から即返却される）
+    const secondRes = await serverApp.request(
+      '/api/medals/generate',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: 'cap_clean_2',
+          taskTitle: `  ${emojiTaskTitle} `,
+          medalPrompt: 'Different AI prompt wording for cleaning task',
+          rarity: 'N',
+        }),
+      },
+      {
+        GEMINI_API_KEY: '',
+        MEDAL_CACHE_BUCKET: bucket,
+      },
+    );
+
+    expect(secondRes.status).toBe(200);
+    const secondBody = (await secondRes.json()) as MedalGenerateResponse;
+    expect(secondBody.cached).toBe(true);
+    expect(secondBody.imageBase64).toBe(validJpegBase64);
+    expect(secondBody.imageDataUrl).toBe(`data:image/jpeg;base64,${validJpegBase64}`);
+    // Gemini API の呼び出し回数は1回のまま増えないこと
+    expect(createInteractionMock).toHaveBeenCalledTimes(1);
+    // IndexedDB 図鑑で上書きせず別個体として蓄積できるよう、medalId と imageBlobKey は新規発行されること
+    expect(secondBody.medal.medalId).not.toBe(firstBody.medal.medalId);
+    expect(secondBody.medal.imageBlobKey).not.toBe(firstBody.medal.imageBlobKey);
+    expect(secondBody.medal.taskId).toBe('cap_clean_2');
+  });
+
+  it('未生成のカスタムタスクやレア度違いのリクエスト時のみ新規生成（cached: false）へ入り、R2に個別保存される', async () => {
+    let callCount = 0;
+    const createInteractionMock = vi.fn().mockImplementation(async () => {
+      callCount += 1;
+      const payload = uint8ArrayToBase64(new Uint8Array([0x89, 0x50, 0x4e, 0x47, callCount]));
+      return {
+        output_image: {
+          type: 'image',
+          mime_type: 'image/png',
+          data: payload,
+        },
+      };
+    });
+
+    setGeminiClientFactoryForTests(() => ({
+      interactions: {
+        create: createInteractionMock as never,
+      },
+    }));
+
+    const { bucket, entries } = createInMemoryR2Bucket();
+    const env = { GEMINI_API_KEY: 'test-dummy-key', MEDAL_CACHE_BUCKET: bucket };
+
+    // 1. スタンプ「掃除」(N) -> 初回生成 (callCount = 1)
+    const resCleanN = await serverApp.request(
+      '/api/medals/generate',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskTitle: '掃除', rarity: 'N' }),
+      },
+      env,
+    );
+    const bodyCleanN = (await resCleanN.json()) as MedalGenerateResponse;
+    expect(bodyCleanN.cached).toBe(false);
+    expect(createInteractionMock).toHaveBeenCalledTimes(1);
+
+    // 2. 同じ「掃除」でも未生成レア度 (SSR) -> 新規生成 (callCount = 2)
+    const resCleanSsr = await serverApp.request(
+      '/api/medals/generate',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskTitle: '掃除', rarity: 'SSR' }),
+      },
+      env,
+    );
+    const bodyCleanSsr = (await resCleanSsr.json()) as MedalGenerateResponse;
+    expect(bodyCleanSsr.cached).toBe(false);
+    expect(bodyCleanSsr.imageBase64).not.toBe(bodyCleanN.imageBase64);
+    expect(createInteractionMock).toHaveBeenCalledTimes(2);
+
+    // 3. カスタムタスク「ベランダの網戸を水洗いする」(N) -> 新規生成 (callCount = 3)
+    const resCustom = await serverApp.request(
+      '/api/medals/generate',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskTitle: 'ベランダの網戸を水洗いする', rarity: 'N' }),
+      },
+      env,
+    );
+    const bodyCustom = (await resCustom.json()) as MedalGenerateResponse;
+    expect(bodyCustom.cached).toBe(false);
+    expect(bodyCustom.imageBase64).not.toBe(bodyCleanN.imageBase64);
+    expect(createInteractionMock).toHaveBeenCalledTimes(3);
+    expect(entries.size).toBe(3);
+
+    // 4. カスタムタスク「ベランダの網戸を水洗いする」(N) 2回目 -> R2ヒット (callCount = 3のまま)
+    const resCustomHit = await serverApp.request(
+      '/api/medals/generate',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskTitle: 'ベランダの網戸を水洗いする', rarity: 'N' }),
+      },
+      env,
+    );
+    const bodyCustomHit = (await resCustomHit.json()) as MedalGenerateResponse;
+    expect(bodyCustomHit.cached).toBe(true);
+    expect(bodyCustomHit.imageBase64).toBe(bodyCustom.imageBase64);
+    expect(createInteractionMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('未生成メダルに対する同時並列リクエスト（In-flight）を合流させ、Gemini APIの重複課金を防ぐ（失敗時はロックを解放して再試行可能）', async () => {
+    let shouldFail = true;
+    let releaseGeneration!: () => void;
+    const gatePromise = new Promise<void>((resolve) => {
+      releaseGeneration = resolve;
+    });
+
+    const coalescedBase64 = uint8ArrayToBase64(new Uint8Array([1, 2, 3, 4, 5, 6]));
+    const createInteractionMock = vi.fn().mockImplementation(async () => {
+      if (shouldFail) {
+        throw new Error('Temporary upstream error');
+      }
+      await gatePromise;
+      return {
+        output_image: {
+          type: 'image',
+          mime_type: 'image/jpeg',
+          data: coalescedBase64,
+        },
+      };
+    });
+
+    setGeminiClientFactoryForTests(() => ({
+      interactions: {
+        create: createInteractionMock as never,
+      },
+    }));
+
+    const { bucket } = createInMemoryR2Bucket();
+    let r2GetCount = 0;
+    const createRequestScopedBucketProxy = (): MedalCacheBucketLike => ({
+      async get(key: string) {
+        r2GetCount += 1;
+        return bucket.get(key);
+      },
+      async put(
+        key: string,
+        value: ArrayBuffer | ArrayBufferView,
+        options?: MedalCachePutOptionsLike,
+      ) {
+        return bucket.put(key, value, options);
+      },
+    });
+
+    const reqInit = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskTitle: '確定申告の領収書を仕分ける', rarity: 'SR' }),
+    };
+
+    // 初回エラー時に In-flight マップが残留せず解放されること
+    const failedRes = await serverApp.request('/api/medals/generate', reqInit, {
+      GEMINI_API_KEY: 'test-dummy-key',
+      MEDAL_CACHE_BUCKET: createRequestScopedBucketProxy(),
+    });
+    expect(failedRes.status).toBe(502);
+    expect(createInteractionMock).toHaveBeenCalledTimes(1);
+    expect(r2GetCount).toBe(1);
+
+    // 回復後に別々のバケットラッパー参照を持つ2リクエストを同時発火 -> R2 GET も Gemini API も追加1回のみ呼ばれること
+    shouldFail = false;
+    const promise1 = Promise.resolve(
+      serverApp.request('/api/medals/generate', reqInit, {
+        GEMINI_API_KEY: 'test-dummy-key',
+        MEDAL_CACHE_BUCKET: createRequestScopedBucketProxy(),
+      }),
+    );
+    const promise2 = Promise.resolve(
+      serverApp.request('/api/medals/generate', reqInit, {
+        GEMINI_API_KEY: 'test-dummy-key',
+        MEDAL_CACHE_BUCKET: createRequestScopedBucketProxy(),
+      }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    releaseGeneration();
+
+    const [res1, res2] = await Promise.all([promise1, promise2]);
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+
+    const body1 = (await res1.json()) as MedalGenerateResponse;
+    const body2 = (await res2.json()) as MedalGenerateResponse;
+
+    expect(createInteractionMock).toHaveBeenCalledTimes(2);
+    expect(r2GetCount).toBe(2);
+    expect([body1.cached, body2.cached].sort()).toEqual([false, true]);
+    expect(body1.imageBase64).toBe(coalescedBase64);
+    expect(body2.imageBase64).toBe(coalescedBase64);
+    expect(body1.medal.medalId).not.toBe(body2.medal.medalId);
+  });
+
+  it('R2 の読み書きで障害が発生しても警告ログを出力してGemini生成へフォールバックし、GET /api/health でバインディング有無を確認できる', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const brokenBucket: MedalCacheBucketLike = {
+      async get(): Promise<MedalCacheObjectBodyLike | null> {
+        throw new Error('R2 read timeout');
+      },
+      async put(): Promise<void> {
+        throw new Error('R2 write quota exceeded');
+      },
+    };
+
+    const fallbackBase64 = uint8ArrayToBase64(new Uint8Array([9, 8, 7, 6, 5, 4]));
+    const createInteractionMock = vi.fn().mockResolvedValue({
+      output_image: {
+        type: 'image',
+        mime_type: 'image/jpeg',
+        data: fallbackBase64,
+      },
+    });
+    setGeminiClientFactoryForTests(() => ({
+      interactions: {
+        create: createInteractionMock as never,
+      },
+    }));
+
+    const res = await serverApp.request(
+      '/api/medals/generate',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskTitle: '牛乳を買う', rarity: 'N' }),
+      },
+      {
+        GEMINI_API_KEY: 'test-dummy-key',
+        MEDAL_CACHE_BUCKET: brokenBucket,
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as MedalGenerateResponse;
+    expect(body.imageBase64).toBe(fallbackBase64);
+    expect(body.cached).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    const healthWithR2 = await serverApp.request(
+      '/api/health',
+      { method: 'GET' },
+      { GEMINI_API_KEY: 'test-dummy-key', MEDAL_CACHE_BUCKET: brokenBucket },
+    );
+    expect(await healthWithR2.json()).toEqual({
+      status: 'ok',
+      service: 'capsule-tasks-api',
+      models: {
+        taskExtraction: 'gemini-3.8-flash',
+        medalGeneration: 'gemini-nano-banana-2.1',
+      },
+      hasApiKey: true,
+      hasMedalCacheBucket: true,
+    });
+  });
+
+  it('App E2E連携: 同一スタンプの2連続開封ではR2キャッシュを再利用してAPI呼び出しを1回に抑えつつ、図鑑（IndexedDB）には2枚の独立メダルとして保存し、カスタムタスク開封時のみ追加生成する', async () => {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const initialTasks: CapsuleTask[] = [
+      {
+        id: 'cap_r2_e2e_clean_1',
+        title: '掃除',
+        capsuleColor: 'blue',
+        rarityBoost: 1.0,
+        medalPrompt: 'A bronze medal with a broom and engraved text "CLEAN SWEEPER"',
+        createdAt: '2026-10-31T01:00:00.000Z',
+        skipCount: 0,
+        status: 'pending',
+      },
+      {
+        id: 'cap_r2_e2e_clean_2',
+        title: '掃除',
+        capsuleColor: 'blue',
+        rarityBoost: 1.0,
+        medalPrompt: 'A bronze medal with a broom and engraved text "CLEAN SWEEPER"',
+        createdAt: '2026-10-31T01:05:00.000Z',
+        skipCount: 0,
+        status: 'pending',
+      },
+      {
+        id: 'cap_r2_e2e_custom_3',
+        title: '神棚のすす払いをする',
+        capsuleColor: 'blue',
+        rarityBoost: 1.0,
+        medalPrompt: 'A bronze medal celebrating shrine dusting',
+        createdAt: '2026-10-31T01:10:00.000Z',
+        skipCount: 0,
+        status: 'pending',
+      },
+    ];
+
+    window.localStorage.setItem(
+      CAPSULE_STORE_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        capsules: initialTasks,
+        playerState: createDefaultPlayerState(todayKey),
+      }),
+    );
+
+    let generationSeq = 0;
+    const createInteractionMock = vi.fn().mockImplementation(async () => {
+      generationSeq += 1;
+      const b64 = uint8ArrayToBase64(new Uint8Array([0xff, 0xd8, 0xff, generationSeq]));
+      return {
+        output_image: {
+          type: 'image',
+          mime_type: 'image/jpeg',
+          data: b64,
+        },
+      };
+    });
+
+    setGeminiClientFactoryForTests(() => ({
+      interactions: {
+        create: createInteractionMock as never,
+      },
+    }));
+
+    const { bucket, entries } = createInMemoryR2Bucket();
+    const customFetch: typeof fetch = (input, init) =>
+      Promise.resolve(
+        serverApp.request(input, init, {
+          GEMINI_API_KEY: 'test-dummy-key',
+          MEDAL_CACHE_BUCKET: bucket,
+        }),
+      );
+
+    render(
+      React.createElement(App, {
+        randomFn: () => 0.95, // すべて N レア度を抽選
+        generateMedalFn: (payload) => generateCommemorativeMedal(payload, customFetch),
+      }),
+    );
+
+    const expectedCleanImgUrl = `data:image/jpeg;base64,${uint8ArrayToBase64(
+      new Uint8Array([0xff, 0xd8, 0xff, 1]),
+    )}`;
+    const expectedCustomImgUrl = `data:image/jpeg;base64,${uint8ArrayToBase64(
+      new Uint8Array([0xff, 0xd8, 0xff, 2]),
+    )}`;
+
+    // 1個目: 「掃除」開封 -> 未キャッシュのため Gemini 生成 (1回目)
+    const btn1 = screen.getByTestId('active-capsule-button');
+    fireEvent.click(btn1);
+    fireEvent.click(btn1);
+    fireEvent.click(btn1);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-reveal-modal')).toBeInTheDocument();
+      expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute('src', expectedCleanImgUrl);
+      expect(window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY)).toBeNull();
+    });
+    expect(createInteractionMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('close-reveal-modal-button'));
+
+    // 2個目: 再度「掃除」開封 -> R2 キャッシュヒットにより Gemini 生成は呼ばれない (1回のまま)
+    const btn2 = screen.getByTestId('active-capsule-button');
+    fireEvent.click(btn2);
+    fireEvent.click(btn2);
+    fireEvent.click(btn2);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-reveal-modal')).toBeInTheDocument();
+      expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute('src', expectedCleanImgUrl);
+      expect(window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY)).toBeNull();
+    });
+    expect(createInteractionMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('close-reveal-modal-button'));
+
+    // 3個目: カスタムタスク「神棚のすす払いをする」開封 -> 未生成のため Gemini 生成が実行される (2回目)
+    const btn3 = screen.getByTestId('active-capsule-button');
+    fireEvent.click(btn3);
+    fireEvent.click(btn3);
+    fireEvent.click(btn3);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('medal-reveal-modal')).toBeInTheDocument();
+      expect(screen.getByTestId('reveal-task-title')).toHaveTextContent('神棚のすす払いをする');
+      expect(screen.getByTestId('reveal-medal-image')).toHaveAttribute('src', expectedCustomImgUrl);
+      expect(window.localStorage.getItem(PENDING_MEDAL_GENERATIONS_STORAGE_KEY)).toBeNull();
+    });
+    expect(createInteractionMock).toHaveBeenCalledTimes(2);
+    expect(entries.size).toBe(2);
+
+    // IndexedDB には「掃除」2枚＋カスタム1枚の計3枚が上書きされずにすべて保存されていること
+    const storedMedals = await listMedals('date-desc', 'ALL');
+    expect(storedMedals).toHaveLength(3);
+    const uniqueMedalIds = new Set(storedMedals.map((m) => m.medalId));
+    const uniqueBlobKeys = new Set(storedMedals.map((m) => m.imageBlobKey));
+    expect(uniqueMedalIds.size).toBe(3);
+    expect(uniqueBlobKeys.size).toBe(3);
   });
 });

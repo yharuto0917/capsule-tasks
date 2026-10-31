@@ -11,6 +11,7 @@
 - [ ] **Task 1.7**: ガチャ演出・カプセル質感・マイクロインタラクション等のUI/UX改善と演出強化
 - [x] **Task 1.8**: 開発ガイドライン（AGENTS.md）策定と割り込みタスク運用ルールの明文化
 - [ ] **Task 1.9**: 開発・ステージング環境（Development / stg ブランチ）と Cloudflare Workers Preview / CI-CD（DevOps）の構築
+- [x] **Task 1.10**: 生成済み記念メダル画像の Cloudflare R2 キャッシュ保存・再利用機構の実装
 
 ### Checkpoint: Phase 1 Complete
 - [ ] `npm test`, `npm run lint`, `npm run build` がすべて通過する
