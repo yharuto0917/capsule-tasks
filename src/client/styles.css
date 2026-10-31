@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import './styles/animations.css';
 
 @layer base {
   :root {
@@ -83,22 +84,30 @@
     0 6px 0 #1e1b18;
 }
 
-/* 立体プッシュボタン（おもちゃの物理スイッチ感） */
+/* 立体プッシュボタン（おもちゃの物理スイッチ感＋弾性タップフィードバック） */
 .toy-push-btn {
+  position: relative;
+  overflow: hidden;
+  touch-action: manipulation;
   border: 3px solid #1e1b18;
   box-shadow:
-    inset 0 3px 0 rgba(255, 255, 255, 0.55),
+    inset 0 3px 0 rgba(255, 255, 255, 0.58),
     inset 0 -3px 0 rgba(0, 0, 0, 0.14),
     0 5px 0 #1e1b18;
   transition:
-    transform 100ms cubic-bezier(0.34, 1.56, 0.64, 1),
-    box-shadow 100ms ease;
+    transform 110ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 110ms ease,
+    filter 110ms ease;
+}
+
+.toy-push-btn:hover:not(:disabled) {
+  filter: brightness(1.03);
 }
 
 .toy-push-btn:active:not(:disabled) {
-  transform: translateY(4px);
+  transform: translateY(4px) scale(0.975);
   box-shadow:
-    inset 0 2px 0 rgba(255, 255, 255, 0.4),
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
     0 1px 0 #1e1b18;
 }
 

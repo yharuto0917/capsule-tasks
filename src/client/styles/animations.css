@@ -1,0 +1,513 @@
+/* ==========================================================================
+   Task 1.7: カプセルトイ物理演出・祝祭エフェクト・セーフエリア CSS 基盤
+   GPU Compositor (transform / opacity) を主軸に 60/120fps で駆動
+   ========================================================================== */
+
+/* 1. iOS Safari セーフエリア対応パディング */
+.safe-top-pad {
+  padding-top: max(0.625rem, env(safe-area-inset-top, 0px));
+}
+
+.safe-bottom-pad {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+}
+
+.safe-sheet-bottom-pad {
+  padding-bottom: max(1rem, calc(env(safe-area-inset-bottom, 0px) + 0.5rem));
+}
+
+@media (min-width: 640px) {
+  .safe-top-pad {
+    padding-top: 0.5rem;
+  }
+  .safe-bottom-pad {
+    padding-bottom: 0.625rem;
+  }
+  .safe-sheet-bottom-pad {
+    padding-bottom: 1rem;
+  }
+}
+
+/* 短尺モバイル（320x568 iPhone SE 等）から大画面まで欠けずに収まる3Dカプセルサイズ */
+.capsule-3d-viewport-size {
+  width: clamp(138px, min(58vw, 28.5dvh), 248px);
+  height: clamp(138px, min(58vw, 28.5dvh), 248px);
+}
+
+/* 2. スワイプドラッグ 60/120fps 直接追従レイヤー（CSS Custom Properties 駆動） */
+.capsule-drag-follower {
+  --drag-x: 0px;
+  --drag-y: 0px;
+  --drag-rot-y: 0deg;
+  --drag-rot-z: 0deg;
+  --drag-scale: 1;
+  transform: perspective(720px)
+    translate3d(calc(var(--drag-x) * 0.46), calc(var(--drag-y) * 0.42), 0)
+    rotateY(var(--drag-rot-y)) rotateZ(var(--drag-rot-z)) scale(var(--drag-scale));
+  will-change: transform;
+}
+
+.capsule-slip-follower {
+  --drag-x: 0px;
+  --drag-y: 0px;
+  --drag-rot-y: 0deg;
+  transform: perspective(600px)
+    translate3d(calc(var(--drag-x) * 0.24), calc(var(--drag-y) * 0.18), 0)
+    rotateY(calc(var(--drag-rot-y) * 0.55));
+  will-change: transform;
+}
+
+/* 3. クラック段階マイクロシェイク＆長押しチャージ微振動 */
+@keyframes capsule-crack-shake-1 {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  22% {
+    transform: translate3d(-4px, 1px, 0) rotate(-1.2deg);
+  }
+  48% {
+    transform: translate3d(4px, -1px, 0) rotate(1.1deg);
+  }
+  74% {
+    transform: translate3d(-2px, 0, 0) rotate(-0.5deg);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+}
+
+@keyframes capsule-crack-shake-2 {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  18% {
+    transform: translate3d(-7px, -2px, 0) rotate(-2.1deg);
+  }
+  38% {
+    transform: translate3d(7px, 2px, 0) rotate(2deg);
+  }
+  60% {
+    transform: translate3d(-5px, -1px, 0) rotate(-1.3deg);
+  }
+  82% {
+    transform: translate3d(3px, 1px, 0) rotate(0.7deg);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+}
+
+@keyframes capsule-burst-shake {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  20% {
+    transform: translate3d(0, -4px, 0) scale(1.035);
+  }
+  45% {
+    transform: translate3d(-5px, 2px, 0) scale(0.99);
+  }
+  70% {
+    transform: translate3d(4px, -1px, 0) scale(1.01);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes capsule-charge-tremor {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  25% {
+    transform: translate3d(-1.8px, 1px, 0);
+  }
+  50% {
+    transform: translate3d(1.8px, -1px, 0);
+  }
+  75% {
+    transform: translate3d(-1.2px, -1px, 0);
+  }
+}
+
+.animate-crack-shake-1 {
+  animation: capsule-crack-shake-1 190ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+.animate-crack-shake-2 {
+  animation: capsule-crack-shake-2 230ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+.animate-burst-shake {
+  animation: capsule-burst-shake 250ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.animate-charge-tremor {
+  animation: capsule-charge-tremor 95ms linear infinite;
+}
+
+/* 4. 先送り（パス）ホッパー吸い込み ＆ リサイクル（ゴミ箱吸引）退場ゴースト */
+@keyframes capsule-pass-suck {
+  0% {
+    opacity: 0.92;
+    transform: translate3d(0, 0, 0) scale(0.92) rotate(0deg);
+  }
+  38% {
+    opacity: 0.88;
+    transform: translate3d(-72px, -34px, 0) scale(0.68) rotate(-110deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(-36px, -138px, 0) scale(0.18) rotate(-260deg);
+  }
+}
+
+@keyframes capsule-recycle-drain-right {
+  0% {
+    opacity: 0.92;
+    transform: translate3d(0, 0, 0) scale(0.92) rotate(0deg);
+  }
+  42% {
+    opacity: 0.85;
+    transform: translate3d(78px, 28px, 0) scale(0.64) rotate(130deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(118px, 128px, 0) scale(0.15) rotate(290deg);
+  }
+}
+
+@keyframes capsule-recycle-drain-down {
+  0% {
+    opacity: 0.92;
+    transform: translate3d(0, 0, 0) scale(0.92) rotate(0deg);
+  }
+  45% {
+    opacity: 0.86;
+    transform: translate3d(18px, 68px, 0) scale(0.62) rotate(120deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(42px, 152px, 0) scale(0.14) rotate(280deg);
+  }
+}
+
+.animate-capsule-pass-suck {
+  animation: capsule-pass-suck 380ms cubic-bezier(0.32, 0, 0.24, 1) forwards;
+}
+
+.animate-capsule-recycle-right {
+  animation: capsule-recycle-drain-right 380ms cubic-bezier(0.32, 0, 0.24, 1) forwards;
+}
+
+.animate-capsule-recycle-down {
+  animation: capsule-recycle-drain-down 380ms cubic-bezier(0.32, 0, 0.24, 1) forwards;
+}
+
+/* 5. リサイクル「＋5 COIN」キラキラ粒子エフェクト */
+@keyframes coin-particle-burst {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0) scale(0.35) rotate(0deg);
+  }
+  20% {
+    opacity: 1;
+    transform: translate3d(calc(var(--tx, 0px) * 0.45), calc(var(--ty, -60px) * 0.35), 0)
+      scale(1.12) rotate(calc(var(--rot, 90deg) * 0.4));
+  }
+  75% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--tx, 0px), var(--ty, -120px), 0) scale(0.55)
+      rotate(var(--rot, 180deg));
+  }
+}
+
+.animate-coin-particle {
+  animation: coin-particle-burst 640ms cubic-bezier(0.16, 1, 0.3, 1) var(--delay, 0ms) both;
+}
+
+/* 6. カプセル開封 Stage 3 閃光フラッシュ ＆ 放射線サンバースト */
+@keyframes stage-burst-flash {
+  0% {
+    opacity: 0;
+    transform: scale(0.45);
+  }
+  24% {
+    opacity: 0.95;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.45);
+  }
+}
+
+@keyframes sunburst-rays-spin {
+  0% {
+    opacity: 0;
+    transform: scale(0.5) rotate(0deg);
+  }
+  28% {
+    opacity: 0.92;
+    transform: scale(1.06) rotate(24deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.36) rotate(72deg);
+  }
+}
+
+.animate-stage-burst-flash {
+  animation: stage-burst-flash 280ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-sunburst-rays {
+  animation: sunburst-rays-spin 320ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* 7. MedalRevealModal 3D回転登場・レア度別ホログラム・紙吹雪祝祭演出 */
+@keyframes modal-card-spring-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0) scale(0.88);
+  }
+  65% {
+    opacity: 1;
+    transform: translate3d(0, -3px, 0) scale(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes medal-3d-spin-pop {
+  0% {
+    opacity: 0;
+    transform: perspective(900px) rotateY(-175deg) scale(0.55);
+  }
+  62% {
+    opacity: 1;
+    transform: perspective(900px) rotateY(14deg) scale(1.06);
+  }
+  82% {
+    transform: perspective(900px) rotateY(-5deg) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(900px) rotateY(0deg) scale(1);
+  }
+}
+
+@keyframes modal-halo-rotate {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.05);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@keyframes ssr-hologram-sweep {
+  0% {
+    transform: translate3d(-120%, -120%, 0) rotate(25deg);
+  }
+  100% {
+    transform: translate3d(120%, 120%, 0) rotate(25deg);
+  }
+}
+
+@keyframes medal-sheen-glint {
+  0%,
+  20% {
+    transform: translate3d(-140%, 0, 0) skewX(-22deg);
+    opacity: 0;
+  }
+  45% {
+    opacity: 0.75;
+  }
+  70%,
+  100% {
+    transform: translate3d(220%, 0, 0) skewX(-22deg);
+    opacity: 0;
+  }
+}
+
+@keyframes confetti-fall-burst {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) scale(0.3) rotate(0deg);
+  }
+  16% {
+    opacity: 1;
+    transform: translate3d(calc(var(--cx, 0px) * 0.55), calc(var(--cy, -70px) * 0.65), 0)
+      scale(1.05) rotate(calc(var(--crot, 180deg) * 0.35));
+  }
+  75% {
+    opacity: 0.92;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--cx, 0px), calc(var(--cy, -70px) + 115px), 0) scale(0.75)
+      rotate(var(--crot, 320deg));
+  }
+}
+
+@keyframes gold-sparkle-twinkle {
+  0%,
+  100% {
+    opacity: 0.2;
+    transform: translate3d(0, 0, 0) scale(0.65) rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+    transform: translate3d(0, -8px, 0) scale(1.18) rotate(45deg);
+  }
+}
+
+.animate-modal-spring-in {
+  animation: modal-card-spring-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-medal-3d-pop {
+  animation: medal-3d-spin-pop 580ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-halo-rotate {
+  animation: modal-halo-rotate 14s linear infinite;
+}
+
+.animate-halo-rotate-fast {
+  animation: modal-halo-rotate 8.5s linear infinite;
+}
+
+.animate-ssr-hologram-sweep {
+  animation: ssr-hologram-sweep 2.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.animate-medal-sheen {
+  animation: medal-sheen-glint 3.6s ease-in-out infinite;
+}
+
+.animate-confetti-piece {
+  animation: confetti-fall-burst 1350ms cubic-bezier(0.16, 1, 0.3, 1) var(--cdelay, 0ms) both;
+}
+
+.animate-sparkle-twinkle {
+  animation: gold-sparkle-twinkle 1.8s ease-in-out var(--sdelay, 0ms) infinite;
+}
+
+/* 8. ヘッダーコイン・コンボバウンス ＆ ホッパー内ミニカプセル玉転がり演出 */
+@keyframes coin-badge-pop {
+  0% {
+    transform: scale(1);
+  }
+  38% {
+    transform: scale(1.11) translateY(-1.5px);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes coin-delta-float {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale(0.75);
+  }
+  22% {
+    opacity: 1;
+    transform: translate3d(0, -4px, 0) scale(1.06);
+  }
+  80% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, -18px, 0) scale(0.9);
+  }
+}
+
+@keyframes hopper-ball-tumble {
+  0% {
+    transform: translate3d(0, -7px, 0) rotate(-32deg) scale(0.9);
+  }
+  52% {
+    transform: translate3d(0, 2px, 0) rotate(14deg) scale(1.06);
+  }
+  78% {
+    transform: translate3d(0, -1.5px, 0) rotate(-5deg) scale(0.98);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+}
+
+@keyframes toy-toast-pop {
+  0% {
+    opacity: 0;
+    transform: translate3d(-50%, -10px, 0) scale(0.84);
+  }
+  65% {
+    opacity: 1;
+    transform: translate3d(-50%, 2px, 0) scale(1.04);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(-50%, 0, 0) scale(1);
+  }
+}
+
+.animate-coin-badge-pop {
+  animation: coin-badge-pop 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.animate-coin-delta-float {
+  animation: coin-delta-float 680ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-hopper-ball-tumble {
+  animation: hopper-ball-tumble 380ms cubic-bezier(0.34, 1.56, 0.64, 1) var(--ball-delay, 0ms) both;
+}
+
+.animate-toy-toast-pop {
+  animation: toy-toast-pop 240ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* 9. アクセシビリティ：視覚効果軽減（prefers-reduced-motion）時の安全フォールバック */
+@media (prefers-reduced-motion: reduce) {
+  .animate-crack-shake-1,
+  .animate-crack-shake-2,
+  .animate-burst-shake,
+  .animate-charge-tremor,
+  .animate-halo-rotate,
+  .animate-halo-rotate-fast,
+  .animate-ssr-hologram-sweep,
+  .animate-medal-sheen,
+  .animate-confetti-piece,
+  .animate-sparkle-twinkle,
+  .animate-hopper-ball-tumble,
+  .animate-coin-particle {
+    animation: none !important;
+  }
+
+  .animate-modal-spring-in,
+  .animate-medal-3d-pop,
+  .animate-stage-burst-flash,
+  .animate-sunburst-rays,
+  .animate-capsule-pass-suck,
+  .animate-capsule-recycle-right,
+  .animate-capsule-recycle-down,
+  .animate-coin-badge-pop,
+  .animate-coin-delta-float,
+  .animate-toy-toast-pop {
+    animation-duration: 120ms !important;
+  }
+}

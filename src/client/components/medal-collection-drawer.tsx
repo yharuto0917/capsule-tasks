@@ -190,6 +190,18 @@ export const MedalCollectionDrawer: React.FC<MedalCollectionDrawerProps> = ({
     return medals.find((m) => m.medalId === selectedMedalId) ?? null;
   }, [medals, selectedMedalId]);
 
+  useEffect(() => {
+    if (!isOpen || typeof window === 'undefined') return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) {
     return null;
   }
@@ -217,7 +229,7 @@ export const MedalCollectionDrawer: React.FC<MedalCollectionDrawerProps> = ({
         }
       }}
     >
-      <div className="toy-cream-panel relative flex h-[90%] w-full flex-col overflow-hidden rounded-t-[32px] border-t-4 border-[#1E1B18] bg-[#FFF8EC] px-3.5 pt-3 pb-4 shadow-[0_-8px_28px_rgba(0,0,0,0.35)]">
+      <div className="toy-cream-panel safe-sheet-bottom-pad relative flex h-[90%] w-full flex-col overflow-hidden rounded-t-[32px] border-t-4 border-[#1E1B18] bg-[#FFF8EC] px-3.5 pt-3 shadow-[0_-8px_28px_rgba(0,0,0,0.35)]">
         {/* 上部ドラッグバー装飾 */}
         <div className="mx-auto mb-2 h-1.5 w-12 shrink-0 rounded-full bg-[#1E1B18]/25" />
 
@@ -440,7 +452,7 @@ export const MedalCollectionDrawer: React.FC<MedalCollectionDrawerProps> = ({
                   >
                     <div className="flex w-full items-center justify-between gap-1 mb-1">
                       <span
-                        className={`rounded-full border border-[#1E1B18] px-1.5 py-0.2 font-display text-[10px] font-black ${rarityStyle.badgeBgClass}`}
+                        className={`rounded-full border border-[#1E1B18] px-1.5 py-0.5 font-display text-[10px] font-black ${rarityStyle.badgeBgClass}`}
                       >
                         {medal.rarity}
                       </span>

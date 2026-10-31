@@ -40,6 +40,7 @@ const BALL_ROTATIONS = [
 /**
  * FR-06: 未完了タスク一覧を一切表示せず、「ガチャ筐体の中に○個入っている」ことを
  * 立体3D球体カプセルのイラストと残数バッジで抽象表示するコンポーネント。
+ * Task 1.7: カプセル補充・パス巡回・開封・破棄時にホッパー内のミニ玉がコロコロと転がり弾む演出を追加。
  */
 export const CapsuleMachineVisual: React.FC<CapsuleMachineVisualProps> = ({
   capsules,
@@ -48,6 +49,9 @@ export const CapsuleMachineVisual: React.FC<CapsuleMachineVisualProps> = ({
   const totalCount = remainingCount ?? capsules?.length ?? 0;
   const visibleCount = Math.min(Math.max(totalCount, 0), MAX_VISIBLE_BALLS);
   const overflowCount = Math.max(totalCount - MAX_VISIBLE_BALLS, 0);
+
+  // 先頭カプセルIDまたは残数が変化した際にホッパー玉の転がりアニメーションを再発火させる純粋署名
+  const hopperSignature = `${totalCount}:${capsules?.[0]?.id ?? 'none'}`;
 
   const visibleItems: { key: string; color: CapsuleColor }[] = Array.from(
     { length: visibleCount },
@@ -64,7 +68,7 @@ export const CapsuleMachineVisual: React.FC<CapsuleMachineVisualProps> = ({
     <div
       data-testid="capsule-machine-visual"
       aria-label={`ガチャ筐体ホッパー 残りカプセル ${totalCount}個`}
-      className="flex w-full items-center justify-between gap-2 rounded-full bg-gradient-to-b from-[#292524] to-[#1C1917] border-2 border-[#FFF8EC] px-3 py-1 text-xs font-bold text-[#FFF8EC] shadow-[inset_0_2px_3px_rgba(255,255,255,0.22),0_3px_0_rgba(0,0,0,0.35)] shrink-0"
+      className="flex w-full items-center justify-between gap-2 rounded-full bg-gradient-to-b from-[#292524] to-[#1C1917] border-2 border-[#FFF8EC] px-2.5 sm:px-3 py-1 text-xs font-bold text-[#FFF8EC] shadow-[inset_0_2px_3px_rgba(255,255,255,0.22),0_3px_0_rgba(0,0,0,0.35)] shrink-0"
     >
       {/* 左側：ステータスメッセージ（タスク名リストは一切表示しない） */}
       <div
@@ -84,25 +88,30 @@ export const CapsuleMachineVisual: React.FC<CapsuleMachineVisualProps> = ({
         <div aria-hidden="true" className="flex items-center -space-x-1.5 shrink-0 pl-1">
           {visibleItems.map((ball, idx) => (
             <span
-              key={ball.key}
-              data-testid="machine-capsule-ball"
-              data-capsule-color={ball.color}
-              className={`relative inline-flex h-4.5 w-4.5 flex-col overflow-hidden rounded-full border-[1.5px] border-[#1E1B18] shadow-[inset_0_-2px_3px_rgba(0,0,0,0.35),0_2px_3px_rgba(0,0,0,0.4)] ${
-                BALL_ROTATIONS[idx % BALL_ROTATIONS.length]
-              }`}
+              key={`${ball.key}_${hopperSignature}`}
+              style={{ '--ball-delay': `${idx * 35}ms` } as React.CSSProperties}
+              className="animate-hopper-ball-tumble inline-flex"
             >
-              {/* 上半球：3D球面スペキュラ＆グラデーション */}
-              <span className="relative h-1/2 w-full" style={BALL_3D_SURFACE_STYLE[ball.color]}>
-                <span className="absolute top-0.5 left-1 h-1 w-1.5 -rotate-12 rounded-full bg-white/85 blur-[0.2px]" />
-              </span>
-              {/* 下半球：立体フロストシェル */}
               <span
-                className="h-1/2 w-full border-t border-black/25"
-                style={{
-                  background:
-                    'radial-gradient(circle at 35% 20%, #FFFFFF 0%, #F1F5F9 60%, #CBD5E1 100%)',
-                }}
-              />
+                data-testid="machine-capsule-ball"
+                data-capsule-color={ball.color}
+                className={`relative inline-flex h-4.5 w-4.5 flex-col overflow-hidden rounded-full border-[1.5px] border-[#1E1B18] shadow-[inset_0_-2px_3px_rgba(0,0,0,0.35),0_2px_3px_rgba(0,0,0,0.4)] ${
+                  BALL_ROTATIONS[idx % BALL_ROTATIONS.length]
+                }`}
+              >
+                {/* 上半球：3D球面スペキュラ＆グラデーション */}
+                <span className="relative h-1/2 w-full" style={BALL_3D_SURFACE_STYLE[ball.color]}>
+                  <span className="absolute top-0.5 left-1 h-1 w-1.5 -rotate-12 rounded-full bg-white/85 blur-[0.2px]" />
+                </span>
+                {/* 下半球：立体フロストシェル */}
+                <span
+                  className="h-1/2 w-full border-t border-black/25"
+                  style={{
+                    background:
+                      'radial-gradient(circle at 35% 20%, #FFFFFF 0%, #F1F5F9 60%, #CBD5E1 100%)',
+                  }}
+                />
+              </span>
             </span>
           ))}
           {overflowCount > 0 && (

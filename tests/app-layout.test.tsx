@@ -15,6 +15,23 @@ describe('HeaderStatusBar', () => {
     expect(screen.getByTestId('status-coins')).toHaveTextContent('240');
     expect(screen.getByTestId('status-combo')).toHaveTextContent('5');
     expect(screen.getByTestId('status-remaining-capsules')).toHaveTextContent('7');
+    expect(screen.queryByTestId('coin-delta-popup')).not.toBeInTheDocument();
+  });
+
+  it('コイン増加時にカウントアップ演出後に目標値へ収束し、+N ポップアップが status-coins のテキストを汚染しない', async () => {
+    const { rerender } = render(
+      <HeaderStatusBar coins={150} todayCombo={2} remainingCapsules={4} />,
+    );
+
+    expect(screen.getByTestId('status-coins')).toHaveTextContent('150');
+
+    rerender(<HeaderStatusBar coins={180} todayCombo={3} remainingCapsules={3} />);
+
+    expect(screen.getByTestId('coin-delta-popup')).toHaveTextContent('+30');
+    await waitFor(() => {
+      expect(screen.getByTestId('status-coins')).toHaveTextContent('180');
+      expect(screen.getByTestId('status-coins').textContent).not.toContain('+30');
+    });
   });
 });
 
@@ -23,6 +40,8 @@ describe('App (1画面完結ガチャステージ骨格)', () => {
     render(<App />);
 
     expect(screen.getByTestId('mobile-stage-container')).toBeInTheDocument();
+    expect(screen.getByTestId('cabinet-top-marquee')).toBeInTheDocument();
+    expect(screen.getByTestId('cabinet-bottom-trim')).toBeInTheDocument();
     expect(screen.getByTestId('header-status-bar')).toBeInTheDocument();
     expect(screen.getByTestId('active-capsule-button')).toBeInTheDocument();
     expect(screen.getByTestId('three-capsule-canvas')).toHaveAttribute(

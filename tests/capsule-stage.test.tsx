@@ -573,6 +573,108 @@ describe('CapsuleStage (FR-06, FR-07, FR-09, FR-10: 1カプセル表示・クラ
     fireEvent.click(screen.getByTestId('active-capsule-button'));
     expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '1');
   });
+
+  it('下方向スワイプ（PointerEvent / TouchEvent）でもリサイクル破棄（onRecycle）が発火し、吸引ゴーストと＋5コイン粒子が描画される', () => {
+    const onPass = vi.fn();
+    const onRecycle = vi.fn();
+
+    render(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={false}
+        onCrack={vi.fn()}
+        onPass={onPass}
+        onRecycle={onRecycle}
+      />,
+    );
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+
+    // 下方向へドラッグ中はゴミ箱シュート吸引インジケーターが表示される
+    fireEvent.pointerDown(capsuleBtn, { pointerId: 11, clientX: 200, clientY: 180 });
+    fireEvent.pointerMove(capsuleBtn, { pointerId: 11, clientX: 204, clientY: 255 });
+    expect(screen.getByTestId('recycle-down-chute-indicator')).toBeInTheDocument();
+
+    fireEvent.pointerUp(capsuleBtn, { pointerId: 11, clientX: 204, clientY: 255 });
+
+    expect(onRecycle).toHaveBeenCalledTimes(1);
+    expect(onPass).not.toHaveBeenCalled();
+    expect(screen.getByTestId('capsule-exit-effect')).toHaveAttribute(
+      'data-exit-kind',
+      'recycle-down',
+    );
+    expect(screen.getByTestId('recycle-coin-particles')).toBeInTheDocument();
+
+    // TouchEvent による下スワイプでも同様に破棄が発火する
+    const stageDome = screen.getByTestId('capsule-stage-dome');
+    fireEvent.touchStart(stageDome, {
+      touches: [{ identifier: 7, clientX: 190, clientY: 170 }],
+    });
+    fireEvent.touchMove(stageDome, {
+      touches: [{ identifier: 7, clientX: 192, clientY: 245 }],
+    });
+    fireEvent.touchEnd(stageDome, {
+      changedTouches: [{ identifier: 7, clientX: 192, clientY: 245 }],
+    });
+
+    expect(onRecycle).toHaveBeenCalledTimes(2);
+  });
+
+  it('左スワイプ先送り時にホッパー吸い込み演出が発火し、Stage 3開封瞬間には閃光フラッシュ、モーダル表示中は3D描画ループが一時停止する', () => {
+    const onPass = vi.fn();
+    const { rerender } = render(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={false}
+        isPaused={false}
+        onCrack={vi.fn()}
+        onPass={onPass}
+        onRecycle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('three-capsule-canvas')).toHaveAttribute('data-paused', 'false');
+
+    const capsuleBtn = screen.getByTestId('active-capsule-button');
+    fireEvent.pointerDown(capsuleBtn, { pointerId: 15, clientX: 230, clientY: 200 });
+    fireEvent.pointerMove(capsuleBtn, { pointerId: 15, clientX: 140, clientY: 202 });
+    fireEvent.pointerUp(capsuleBtn, { pointerId: 15, clientX: 140, clientY: 202 });
+    // ドラッグ解放直後の合成 click は抑止され誤クラックしない
+    fireEvent.click(capsuleBtn);
+
+    expect(onPass).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('capsule-crack-svg')).toHaveAttribute('data-crack-step', '0');
+    expect(screen.getByTestId('capsule-exit-effect')).toHaveAttribute('data-exit-kind', 'pass');
+    expect(screen.queryByTestId('recycle-coin-particles')).not.toBeInTheDocument();
+
+    // 右クリック（button=2）押下ではドラッグや長押しジェスチャーが開始されない
+    fireEvent.pointerDown(capsuleBtn, { pointerId: 19, button: 2, clientX: 230, clientY: 200 });
+    fireEvent.pointerMove(capsuleBtn, { pointerId: 19, button: 2, clientX: 120, clientY: 200 });
+    fireEvent.pointerUp(capsuleBtn, { pointerId: 19, button: 2, clientX: 120, clientY: 200 });
+    expect(onPass).toHaveBeenCalledTimes(1);
+
+    // 3回タップで Stage 3 閃光フラッシュが描画される
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    fireEvent.click(capsuleBtn);
+    expect(screen.getByTestId('capsule-burst-flash')).toBeInTheDocument();
+
+    // モーダル/シート展開時の isPaused=true が ThreeCapsuleCanvas へ伝播する
+    rerender(
+      <CapsuleStage
+        activeCapsule={sampleGoldTask}
+        remainingCount={3}
+        isUpdating={false}
+        isPaused={true}
+        onCrack={vi.fn()}
+        onPass={onPass}
+        onRecycle={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('three-capsule-canvas')).toHaveAttribute('data-paused', 'true');
+  });
 });
 
 describe('App メイン画面統合操作 (開封・左スワイプ先送り・リサイクル＋5コイントースト)', () => {
